@@ -1,10 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { VaultPaneView } from '../../components/VaultPaneView'
+import { VaultPaneView } from '#/features/vault/vault-pane-view'
 
 export const Route = createFileRoute('/app/all')({
-  component: AllItemsPage,
+  component: AllPage,
 })
 
-function AllItemsPage() {
+function AllPage() {
   return <VaultPaneView category="all" />
 }

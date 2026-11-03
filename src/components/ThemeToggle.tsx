@@ -1,81 +1,84 @@
-import { useEffect, useState } from 'react'
+import { MoonIcon, SunIcon } from 'lucide-react'
+import { type Theme, useTheme } from '#/lib/theme'
+import { cn } from '#/lib/utils'
+import { SegmentGroup, SegmentGroupItem } from './ui/segment-group'
 
-type ThemeMode = 'light' | 'dark' | 'auto'
+const OPTIONS: { value: Theme; label: string; icon: typeof SunIcon }[] = [
+  { value: 'light', label: 'Light', icon: SunIcon },
+  { value: 'dark', label: 'Dark', icon: MoonIcon },
+]
 
-function getInitialMode(): ThemeMode {
-  if (typeof window === 'undefined') {
-    return 'auto'
+const TONES = {
+  /** On the page background: ink knob. */
+  default: {
+    pill: 'border-foreground/20 [&_[data-slot=segment-group-indicator]]:bg-foreground',
+    item: 'text-foreground/70 hover:text-foreground data-[state=checked]:text-background',
+  },
+  /** On a solid primary surface (the mobile menu): white knob. */
+  inverse: {
+    pill: 'border-white/35 [&_[data-slot=segment-group-indicator]]:bg-white',
+    item: 'text-white/80 hover:text-white data-[state=checked]:text-primary',
+  },
+} as const
+
+/**
+ * Ondeck-style appearance switch: a bordered pill with sun and moon, where
+ * a solid knob slides under the active one.
+ */
+export function ThemeToggle({
+  className,
+  tone = 'default',
+}: {
+  className?: string
+  tone?: keyof typeof TONES
+}) {
+  const { theme, setTheme } = useTheme()
+  const pillClass = cn(
+    'h-10 w-fit shrink-0 gap-0 rounded-full border p-[3px]',
+    TONES[tone].pill,
+  )
+
+  // The theme is only known after mount; render a same-size placeholder until
+  // then so the knob is measured against the right option on first paint.
+  if (!theme) {
+    return (
+      <div aria-hidden className={cn(pillClass, 'flex', className)}>
+        {OPTIONS.map(({ value, icon: Icon }) => (
+          <span
+            className={cn(
+              'flex size-8 items-center justify-center',
+              TONES[tone].item,
+            )}
+            key={value}
+          >
+            <Icon className="size-4" />
+          </span>
+        ))}
+      </div>
+    )
   }
-
-  const stored = window.localStorage.getItem('theme')
-  if (stored === 'light' || stored === 'dark' || stored === 'auto') {
-    return stored
-  }
-
-  return 'auto'
-}
-
-function applyThemeMode(mode: ThemeMode) {
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-  const resolved = mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode
-
-  document.documentElement.classList.remove('light', 'dark')
-  document.documentElement.classList.add(resolved)
-
-  if (mode === 'auto') {
-    document.documentElement.removeAttribute('data-theme')
-  } else {
-    document.documentElement.setAttribute('data-theme', mode)
-  }
-
-  document.documentElement.style.colorScheme = resolved
-}
-
-export default function ThemeToggle() {
-  const [mode, setMode] = useState<ThemeMode>('auto')
-
-  useEffect(() => {
-    const initialMode = getInitialMode()
-    setMode(initialMode)
-    applyThemeMode(initialMode)
-  }, [])
-
-  useEffect(() => {
-    if (mode !== 'auto') {
-      return
-    }
-
-    const media = window.matchMedia('(prefers-color-scheme: dark)')
-    const onChange = () => applyThemeMode('auto')
-
-    media.addEventListener('change', onChange)
-    return () => {
-      media.removeEventListener('change', onChange)
-    }
-  }, [mode])
-
-  function toggleMode() {
-    const nextMode: ThemeMode =
-      mode === 'light' ? 'dark' : mode === 'dark' ? 'auto' : 'light'
-    setMode(nextMode)
-    applyThemeMode(nextMode)
-    window.localStorage.setItem('theme', nextMode)
-  }
-
-  const label =
-    mode === 'auto'
-      ? 'Theme mode: auto (system). Click to switch to light mode.'
-      : `Theme mode: ${mode}. Click to switch mode.`
 
   return (
-    <button
-      type="button"
-      onClick={toggleMode}
-      aria-label={label}
-      title={label}
-      className="rounded-full border border-[var(--chip-line)] bg-[var(--chip-bg)] px-3 py-1.5 text-sm font-semibold text-[var(--sea-ink)] shadow-[0_8px_22px_rgba(30,90,72,0.08)] transition hover:-translate-y-0.5"
+    <SegmentGroup
+      aria-label="Appearance"
+      className={cn(pillClass, className)}
+      onValueChange={({ value }) => value && setTheme(value as Theme)}
+      value={theme}
     >
-      {mode === 'auto' ? 'Auto' : mode === 'dark' ? 'Dark' : 'Light'}
-    </button>
+      {OPTIONS.map(({ value, label, icon: Icon }) => (
+        <SegmentGroupItem
+          aria-label={label}
+          className={cn(
+            'flex size-8 items-center justify-center rounded-full transition-colors duration-150',
+            TONES[tone].item,
+          )}
+          key={value}
+          title={label}
+          value={value}
+        >
+          <Icon aria-hidden className="relative z-1 size-4" />
+        </SegmentGroupItem>
+      ))}
+    </SegmentGroup>
   )
 }

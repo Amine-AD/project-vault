@@ -1,16 +1,14 @@
-"use client";
+import { Dialog as ArkDialog, useDialogContext } from '@ark-ui/react/dialog'
+import { ark } from '@ark-ui/react/factory'
+import { Portal } from '@ark-ui/react/portal'
+import { XIcon } from 'lucide-react'
+import React from 'react'
+import { tv, type VariantProps } from 'tailwind-variants'
+import { cn } from '@/lib/utils'
+import { Button } from './button'
+import { ScrollArea } from './scroll-area'
 
-import { Dialog as ArkDialog, useDialogContext } from "@ark-ui/react/dialog";
-import { ark } from "@ark-ui/react/factory";
-import { Portal } from "@ark-ui/react/portal";
-import { XIcon } from "lucide-react";
-import React from "react";
-import { tv, type VariantProps } from "tailwind-variants";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/button";
-import { ScrollArea } from "@/components/scroll-area";
-
-export const useDialog = useDialogContext;
+export const useDialog = useDialogContext
 
 interface DialogContextProps {
   /**
@@ -18,10 +16,10 @@ interface DialogContextProps {
    *
    * @default true
    */
-  modal?: boolean;
+  modal?: boolean
 }
 
-const DialogContext = React.createContext({} as DialogContextProps);
+const DialogContext = React.createContext({} as DialogContextProps)
 
 export const Dialog = (props: React.ComponentProps<typeof ArkDialog.Root>) => {
   const {
@@ -29,7 +27,7 @@ export const Dialog = (props: React.ComponentProps<typeof ArkDialog.Root>) => {
     lazyMount = true,
     unmountOnExit = true,
     ...rest
-  } = props;
+  } = props
 
   return (
     <DialogContext.Provider value={{ modal }}>
@@ -40,34 +38,34 @@ export const Dialog = (props: React.ComponentProps<typeof ArkDialog.Root>) => {
         {...rest}
       />
     </DialogContext.Provider>
-  );
-};
+  )
+}
 
 export const DialogTrigger = (
-  props: React.ComponentProps<typeof ArkDialog.Trigger>
-) => <ArkDialog.Trigger {...props} />;
+  props: React.ComponentProps<typeof ArkDialog.Trigger>,
+) => <ArkDialog.Trigger {...props} />
 
 export const dialogOverlayVariants = tv({
   base: [
-    "fixed inset-0 z-50",
-    "bg-black/32 backdrop-blur-xs",
-    "duration-200",
-    "peer peer-data-[slot=dialog-overlay]:hidden",
-    "data-[state=open]:fade-in-0 data-[state=open]:animate-in",
-    "data-[state=closed]:fade-out-0 data-[state=closed]:animate-out",
-    "motion-reduce:animate-none!",
+    'fixed inset-0 z-50',
+    'bg-black/32 backdrop-blur-xs',
+    'duration-200',
+    'peer peer-data-[slot=dialog-overlay]:hidden',
+    'data-[state=open]:fade-in-0 data-[state=open]:animate-in',
+    'data-[state=closed]:fade-out-0 data-[state=closed]:animate-out',
+    'motion-reduce:animate-none!',
   ],
-});
+})
 
 export const DialogOverlay = (
-  props: React.ComponentProps<typeof ArkDialog.Backdrop>
+  props: React.ComponentProps<typeof ArkDialog.Backdrop>,
 ) => {
-  const { className, ...rest } = props;
+  const { className, ...rest } = props
 
-  const { modal } = _useDialog();
+  const { modal } = _useDialog()
 
   if (!modal) {
-    return null;
+    return null
   }
 
   return (
@@ -76,77 +74,77 @@ export const DialogOverlay = (
       data-slot="dialog-overlay"
       {...rest}
     />
-  );
-};
+  )
+}
 
 export const DialogPositioner = (
-  props: React.ComponentProps<typeof ArkDialog.Positioner>
+  props: React.ComponentProps<typeof ArkDialog.Positioner>,
 ) => {
-  const { className, ...rest } = props;
+  const { className, ...rest } = props
 
   return (
     <ArkDialog.Positioner
       className={cn(
-        "fixed inset-0 z-50",
-        "h-svh w-screen",
-        "grid grid-rows-[1fr_auto_3fr] justify-items-center",
-        "p-4",
-        className
+        'fixed inset-0 z-50',
+        'h-svh w-screen',
+        'grid grid-rows-[1fr_auto_3fr] justify-items-center',
+        'p-4',
+        className,
       )}
       data-slot="dialog-positioner"
       {...rest}
     />
-  );
-};
+  )
+}
 
 export const dialogContentVariants = tv({
   base: [
-    "[--space:--spacing(6)]",
-    "z-[calc(50+var(--layer-index,0))]",
-    "relative",
-    "row-start-2",
-    "max-h-[calc(100svh-2rem)] min-h-0 w-full min-w-0",
-    "flex flex-col overflow-hidden",
-    "bg-popover",
-    "text-popover-foreground",
-    "rounded-2xl border shadow-lg/5",
-    "outline-none",
-    "translate-y-[calc(-1.25rem*var(--nested-layer-count))]",
-    "transition-[scale,opacity,translate] duration-200 ease-in-out will-change-transform",
-    "data-[nested=dialog]:data-[state=closed]:slide-in-from-bottom-10 data-[nested=dialog]:data-[state=open]:slide-in-from-bottom-10 data-[has-nested=dialog]:origin-top",
-    "scale-[calc(1-0.1*var(--nested-layer-count))] opacity-[calc(1-0.1*var(--nested-layer-count))]",
-    "data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-[98%] data-[state=closed]:animate-out",
-    "data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[98%] data-[state=open]:animate-in",
-    "motion-reduce:animate-none! motion-reduce:transition-none!",
+    '[--space:--spacing(6)]',
+    'z-[calc(50+var(--layer-index,0))]',
+    'relative',
+    'row-start-2',
+    'max-h-[calc(100svh-2rem)] min-h-0 w-full min-w-0',
+    'flex flex-col overflow-hidden',
+    'bg-popover',
+    'text-popover-foreground',
+    'rounded-2xl border shadow-lg/5',
+    'outline-none',
+    'translate-y-[calc(-1.25rem*var(--nested-layer-count))]',
+    'transition-[scale,opacity,translate] duration-200 ease-in-out will-change-transform',
+    'data-[nested=dialog]:data-[state=closed]:slide-in-from-bottom-10 data-[nested=dialog]:data-[state=open]:slide-in-from-bottom-10 data-[has-nested=dialog]:origin-top',
+    'scale-[calc(1-0.1*var(--nested-layer-count))] opacity-[calc(1-0.1*var(--nested-layer-count))]',
+    'data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-[98%] data-[state=closed]:animate-out',
+    'data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[98%] data-[state=open]:animate-in',
+    'motion-reduce:animate-none! motion-reduce:transition-none!',
   ],
   variants: {
     size: {
-      sm: ["max-w-md"],
-      md: ["max-w-lg"],
-      lg: ["max-w-xl"],
-      xl: ["max-w-2xl"],
-      "2xl": ["max-w-3xl"],
-      "3xl": ["max-w-4xl"],
-      "4xl": ["max-w-5xl"],
-      "5xl": ["max-w-6xl"],
-      "6xl": ["max-w-7xl"],
-      fullscreen: ["size-full"],
+      sm: ['max-w-md'],
+      md: ['max-w-lg'],
+      lg: ['max-w-xl'],
+      xl: ['max-w-2xl'],
+      '2xl': ['max-w-3xl'],
+      '3xl': ['max-w-4xl'],
+      '4xl': ['max-w-5xl'],
+      '5xl': ['max-w-6xl'],
+      '6xl': ['max-w-7xl'],
+      fullscreen: ['size-full'],
     },
     bottomStickOnMobile: {
       true: [
-        "max-sm:max-h-[calc(100svh-3rem)]",
-        "max-sm:max-w-none",
-        "max-sm:rounded-none max-sm:rounded-t-2xl max-sm:border-x-0 max-sm:border-t max-sm:border-b-0",
-        "max-sm:opacity-[calc(1-min(var(--nested-dialogs),1))]",
-        "max-sm:data-[state=closed]:slide-out-to-bottom-5 max-sm:data-[state=open]:slide-in-from-bottom-5",
-        "max-sm:data-[state=closed]:zoom-out-100 max-sm:data-[state=open]:zoom-in-100",
+        'max-sm:max-h-[calc(100svh-3rem)]',
+        'max-sm:max-w-none',
+        'max-sm:rounded-none max-sm:rounded-t-2xl max-sm:border-x-0 max-sm:border-t max-sm:border-b-0',
+        'max-sm:opacity-[calc(1-min(var(--nested-dialogs),1))]',
+        'max-sm:data-[state=closed]:slide-out-to-bottom-5 max-sm:data-[state=open]:slide-in-from-bottom-5',
+        'max-sm:data-[state=closed]:zoom-out-100 max-sm:data-[state=open]:zoom-in-100',
       ],
     },
   },
   defaultVariants: {
-    size: "md",
+    size: 'md',
   },
-});
+})
 
 interface DialogContentProps
   extends React.ComponentProps<typeof ArkDialog.Content>,
@@ -156,24 +154,24 @@ interface DialogContentProps
    *
    * @default true
    */
-  bottomStickOnMobile?: boolean;
+  bottomStickOnMobile?: boolean
   /**
    * Show close button at the top right corner
    *
    * @default true
    */
-  showCloseButton?: boolean;
+  showCloseButton?: boolean
 }
 
 export const DialogContent = (props: DialogContentProps) => {
   const {
     showCloseButton = true,
     bottomStickOnMobile = true,
-    size = "md",
+    size = 'md',
     className,
     children,
     ...rest
-  } = props;
+  } = props
 
   return (
     <Portal>
@@ -182,13 +180,13 @@ export const DialogContent = (props: DialogContentProps) => {
       <DialogPositioner
         className={cn(
           bottomStickOnMobile &&
-            "max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12"
+            'max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12',
         )}
       >
         <ArkDialog.Content
           className={cn(
             dialogContentVariants({ size, bottomStickOnMobile }),
-            className
+            className,
           )}
           data-slot="dialog-content"
           {...rest}
@@ -210,8 +208,8 @@ export const DialogContent = (props: DialogContentProps) => {
         </ArkDialog.Content>
       </DialogPositioner>
     </Portal>
-  );
-};
+  )
+}
 
 interface DialogBodyProps extends React.ComponentProps<typeof ark.div> {
   /**
@@ -219,50 +217,50 @@ interface DialogBodyProps extends React.ComponentProps<typeof ark.div> {
    *
    * @default false
    */
-  scrollFade?: boolean;
+  scrollFade?: boolean
 }
 
 export const DialogBody = (props: DialogBodyProps) => {
-  const { scrollFade = false, className, ...rest } = props;
+  const { scrollFade = false, className, ...rest } = props
 
   return (
     <ScrollArea className="min-h-0 flex-1" scrollFade={scrollFade}>
       <ark.div
         className={cn(
-          "p-(--space)",
-          "in-[[data-slot=dialog-content]:has([data-slot=dialog-header])]:pt-0",
-          "in-[[data-slot=dialog-content]:has([data-slot=dialog-footer]:not(.border-t))]:pb-1",
-          className
+          'p-(--space)',
+          'in-[[data-slot=dialog-content]:has([data-slot=dialog-header])]:pt-0',
+          'in-[[data-slot=dialog-content]:has([data-slot=dialog-footer]:not(.border-t))]:pb-1',
+          className,
         )}
         data-slot="dialog-body"
         {...rest}
       />
     </ScrollArea>
-  );
-};
+  )
+}
 
 interface DialogHeaderProps extends React.ComponentProps<typeof ark.div> {
   /**
    * The description of the dialog
    */
-  description?: string;
+  description?: string
   /**
    * The title of the dialog
    */
-  title?: string;
+  title?: string
 }
 
 export const DialogHeader = (props: DialogHeaderProps) => {
-  const { className, title, description, children, ...rest } = props;
+  const { className, title, description, children, ...rest } = props
 
   return (
     <ark.div
       className={cn(
-        "shrink-0",
-        "p-(--space)",
-        "flex flex-col gap-2",
-        "in-[[data-slot=dialog-content]:has([data-slot=dialog-body])]:pb-3",
-        className
+        'shrink-0',
+        'p-(--space)',
+        'flex flex-col gap-2',
+        'in-[[data-slot=dialog-content]:has([data-slot=dialog-body])]:pb-3',
+        className,
       )}
       data-slot="dialog-header"
       {...rest}
@@ -271,76 +269,76 @@ export const DialogHeader = (props: DialogHeaderProps) => {
 
       {!!description && <DialogDescription>{description}</DialogDescription>}
 
-      {!title && typeof children === "string" ? (
+      {!title && typeof children === 'string' ? (
         <DialogTitle>{children}</DialogTitle>
       ) : (
         children
       )}
     </ark.div>
-  );
-};
+  )
+}
 
 export const DialogTitle = (
-  props: React.ComponentProps<typeof ArkDialog.Title>
+  props: React.ComponentProps<typeof ArkDialog.Title>,
 ) => {
-  const { className, ...rest } = props;
+  const { className, ...rest } = props
 
   return (
     <ArkDialog.Title
       className={cn(
-        "font-heading font-semibold text-lg leading-none",
-        className
+        'font-heading font-semibold text-lg leading-none',
+        className,
       )}
       data-slot="dialog-title"
       {...rest}
     />
-  );
-};
+  )
+}
 
 export const DialogDescription = (
-  props: React.ComponentProps<typeof ArkDialog.Description>
+  props: React.ComponentProps<typeof ArkDialog.Description>,
 ) => {
-  const { className, ...rest } = props;
+  const { className, ...rest } = props
 
   return (
     <ArkDialog.Description
-      className={cn("text-muted-foreground text-sm", className)}
+      className={cn('text-muted-foreground text-sm', className)}
       data-slot="dialog-description"
       {...rest}
     />
-  );
-};
+  )
+}
 
 export const DialogClose = (
-  props: React.ComponentProps<typeof ArkDialog.CloseTrigger>
-) => <ArkDialog.CloseTrigger data-slot="dialog-close-trigger" {...props} />;
+  props: React.ComponentProps<typeof ArkDialog.CloseTrigger>,
+) => <ArkDialog.CloseTrigger data-slot="dialog-close-trigger" {...props} />
 
 export const DialogFooter = (props: React.ComponentProps<typeof ark.div>) => {
-  const { className, ...rest } = props;
+  const { className, ...rest } = props
 
   return (
     <ark.div
       className={cn(
-        "shrink-0",
-        "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
-        "sm:rounded-b-[calc(var(--radius-2xl)-1px)]",
-        "px-(--space) py-4",
-        "bg-muted/48",
-        "border-t",
-        className
+        'shrink-0',
+        'flex flex-col-reverse gap-2 sm:flex-row sm:justify-end',
+        'sm:rounded-b-[calc(var(--radius-2xl)-1px)]',
+        'px-(--space) py-4',
+        'bg-muted/48',
+        'border-t',
+        className,
       )}
       data-slot="dialog-footer"
       {...rest}
     />
-  );
-};
+  )
+}
 
 const _useDialog = () => {
-  const context = React.useContext(DialogContext);
+  const context = React.useContext(DialogContext)
 
   if (!context) {
-    throw new Error("useDialog must be used within a DialogProvider");
+    throw new Error('useDialog must be used within a DialogProvider')
   }
 
-  return context;
-};
+  return context
+}

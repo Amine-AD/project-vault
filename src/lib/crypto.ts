@@ -41,12 +41,13 @@ export function generateSalt(): string {
  * Derives both:
  * 1. VaultKey: AES-256-GCM CryptoKey (kept strictly in browser memory)
  * 2. AuthKey: SHA-256 hashed token sent to the server for authentication
+ * plus the raw vault key bytes, needed only to create a recovery kit.
  */
 export async function deriveKeys(
   masterPassword: string,
   saltBase64: string,
-  iterations = 600000
-): Promise<{ vaultKey: CryptoKey; authKey: string }> {
+  iterations = 600000,
+): Promise<{ vaultKey: CryptoKey; authKey: string; rawVaultKey: Uint8Array }> {
   const encoder = new TextEncoder()
   const passwordBuffer = encoder.encode(masterPassword)
   const saltBuffer = base64ToBuffer(saltBase64)
@@ -57,7 +58,7 @@ export async function deriveKeys(
     passwordBuffer,
     'PBKDF2',
     false,
-    ['deriveBits']
+    ['deriveBits'],
   )
 
   // Derive 512 bits (64 bytes)
@@ -69,7 +70,7 @@ export async function deriveKeys(
       hash: 'SHA-256',
     },
     baseKey,
-    512
+    512,
   )
 
   const derivedBytes = new Uint8Array(derivedBits)
@@ -84,17 +85,18 @@ export async function deriveKeys(
     vaultKeyBytes,
     { name: 'AES-GCM' },
     false,
-    ['encrypt', 'decrypt']
+    ['encrypt', 'decrypt'],
   )
 
   // Hash authKeyBytes with SHA-256 before sending to server to prevent raw derived key leakage
   const authHashBuffer = await window.crypto.subtle.digest(
     'SHA-256',
-    authKeyBytes
+    authKeyBytes,
   )
   const authKey = bufferToHex(authHashBuffer)
 
-  return { vaultKey, authKey }
+  // rawVaultKey is only for wrapping into a recovery kit; callers drop it
+  return { vaultKey, authKey, rawVaultKey: vaultKeyBytes }
 }
 
 export interface EncryptedPayload {
@@ -107,7 +109,7 @@ export interface EncryptedPayload {
  */
 export async function encryptData(
   data: any,
-  vaultKey: CryptoKey
+  vaultKey: CryptoKey,
 ): Promise<string> {
   const encoder = new TextEncoder()
   const plaintext = encoder.encode(JSON.stringify(data))
@@ -122,7 +124,7 @@ export async function encryptData(
       iv,
     },
     vaultKey,
-    plaintext
+    plaintext,
   )
 
   const payload: EncryptedPayload = {
@@ -138,7 +140,7 @@ export async function encryptData(
  */
 export async function decryptData<T = any>(
   encryptedString: string,
-  vaultKey: CryptoKey
+  vaultKey: CryptoKey,
 ): Promise<T> {
   const payload: EncryptedPayload = JSON.parse(encryptedString)
   const iv = base64ToBuffer(payload.iv)
@@ -150,7 +152,7 @@ export async function decryptData<T = any>(
       iv: iv as any,
     },
     vaultKey,
-    ciphertext as any
+    ciphertext as any,
   )
 
   const decoder = new TextDecoder()
@@ -183,7 +185,7 @@ export const DEFAULT_GENERATOR_OPTIONS: PasswordGeneratorOptions = {
  * Cryptographically secure password generator
  */
 export function generatePassword(
-  options: Partial<PasswordGeneratorOptions> = {}
+  options: Partial<PasswordGeneratorOptions> = {},
 ): string {
   const opts = { ...DEFAULT_GENERATOR_OPTIONS, ...options }
   let upperChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -256,13 +258,9 @@ export function getPasswordStrength(password: string): {
   if (/[A-Z]/.test(password) && /[a-z]/.test(password)) score++
   if (/[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password)) score++
 
-  const labels: Array<'Very Weak' | 'Weak' | 'Fair' | 'Strong' | 'Very Strong'> = [
-    'Very Weak',
-    'Weak',
-    'Fair',
-    'Strong',
-    'Very Strong',
-  ]
+  const labels: Array<
+    'Very Weak' | 'Weak' | 'Fair' | 'Strong' | 'Very Strong'
+  > = ['Very Weak', 'Weak', 'Fair', 'Strong', 'Very Strong']
   const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#10b981']
 
   return {

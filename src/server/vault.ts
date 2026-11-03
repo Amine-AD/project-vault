@@ -1,9 +1,10 @@
+import crypto from 'node:crypto'
 import { createServerFn } from '@tanstack/react-start'
 import { getCookie } from '@tanstack/react-start/server'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db'
 import { sessions, users, vaultItems } from '../db/schema'
-import { eq, and, desc } from 'drizzle-orm'
-import crypto from 'node:crypto'
+import { NEUTRAL_METADATA, toClientRow } from './item-rows'
 
 const SESSION_COOKIE_NAME = 'vault_session'
 
@@ -36,12 +37,13 @@ function requireUser() {
   return user
 }
 
+/**
+ * Everything about an item except its id and timestamps is inside
+ * encryptedData, including its type, favorite flag and tags.
+ */
 export interface EncryptedVaultItemInput {
   id?: string
-  type: 'login' | 'note'
   encryptedData: string
-  isFavorite: boolean
-  tags: string[]
 }
 
 /**
@@ -51,23 +53,14 @@ export const getEncryptedVaultItems = createServerFn({ method: 'GET' }).handler(
   async () => {
     const user = requireUser()
 
-    const items = db
+    return db
       .select()
       .from(vaultItems)
       .where(eq(vaultItems.userId, user.id))
       .orderBy(desc(vaultItems.updatedAt))
       .all()
-
-    return items.map((row) => ({
-      id: row.id,
-      type: row.type as 'login' | 'note',
-      encryptedData: row.encryptedData,
-      isFavorite: row.isFavorite === 1,
-      tags: JSON.parse(row.tags || '[]') as string[],
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    }))
-  }
+      .map(toClientRow)
+  },
 )
 
 /**
@@ -79,8 +72,6 @@ export const saveVaultItem = createServerFn({ method: 'POST' })
     const user = requireUser()
     const now = Date.now()
     const itemId = data.id || crypto.randomUUID()
-    const tagsJson = JSON.stringify(data.tags || [])
-    const favInt = data.isFavorite ? 1 : 0
 
     const existing = db
       .select()
@@ -91,10 +82,8 @@ export const saveVaultItem = createServerFn({ method: 'POST' })
     if (existing) {
       db.update(vaultItems)
         .set({
-          type: data.type,
+          ...NEUTRAL_METADATA,
           encryptedData: data.encryptedData,
-          isFavorite: favInt,
-          tags: tagsJson,
           updatedAt: now,
         })
         .where(and(eq(vaultItems.id, itemId), eq(vaultItems.userId, user.id)))
@@ -102,12 +91,10 @@ export const saveVaultItem = createServerFn({ method: 'POST' })
     } else {
       db.insert(vaultItems)
         .values({
+          ...NEUTRAL_METADATA,
           id: itemId,
           userId: user.id,
-          type: data.type,
           encryptedData: data.encryptedData,
-          isFavorite: favInt,
-          tags: tagsJson,
           createdAt: now,
           updatedAt: now,
         })
@@ -145,21 +132,20 @@ export const batchImportVaultItems = createServerFn({ method: 'POST' })
     const user = requireUser()
     const now = Date.now()
 
-    for (const item of data.items) {
-      const itemId = item.id || crypto.randomUUID()
-      db.insert(vaultItems)
-        .values({
-          id: itemId,
-          userId: user.id,
-          type: item.type,
-          encryptedData: item.encryptedData,
-          isFavorite: item.isFavorite ? 1 : 0,
-          tags: JSON.stringify(item.tags || []),
-          createdAt: now,
-          updatedAt: now,
-        })
-        .run()
-    }
+    db.transaction((tx) => {
+      for (const item of data.items) {
+        tx.insert(vaultItems)
+          .values({
+            ...NEUTRAL_METADATA,
+            id: item.id || crypto.randomUUID(),
+            userId: user.id,
+            encryptedData: item.encryptedData,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run()
+      }
+    })
 
     return { success: true, count: data.items.length }
   })
@@ -172,6 +158,30 @@ export const deleteAllVaultItems = createServerFn({ method: 'POST' }).handler(
     const user = requireUser()
     db.delete(vaultItems).where(eq(vaultItems.userId, user.id)).run()
     return { success: true }
-  }
+  },
 )
 
+/**
+ * One-time migration: replace items' ciphertext with a version that carries
+ * their metadata, and neutralize the plaintext columns. Leaves updatedAt alone.
+ */
+export const rewrapVaultItems = createServerFn({ method: 'POST' })
+  .validator(
+    (data: { items: Array<{ id: string; encryptedData: string }> }) => data,
+  )
+  .handler(async ({ data }) => {
+    const user = requireUser()
+
+    db.transaction((tx) => {
+      for (const item of data.items) {
+        tx.update(vaultItems)
+          .set({ ...NEUTRAL_METADATA, encryptedData: item.encryptedData })
+          .where(
+            and(eq(vaultItems.id, item.id), eq(vaultItems.userId, user.id)),
+          )
+          .run()
+      }
+    })
+
+    return { success: true, count: data.items.length }
+  })

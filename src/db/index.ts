@@ -1,8 +1,8 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import * as schema from './schema'
-import path from 'node:path'
-import fs from 'node:fs'
 
 const dbPath = path.resolve(process.cwd(), 'vault.db')
 
@@ -47,5 +47,21 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
   CREATE INDEX IF NOT EXISTS idx_vault_items_user_id ON vault_items(user_id);
 `)
+
+// Columns added after the first release
+const userColumns = new Set(
+  (sqlite.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map(
+    (column) => column.name,
+  ),
+)
+for (const [name, type] of [
+  ['recovery_auth_hash', 'TEXT'],
+  ['recovery_wrapped_key', 'TEXT'],
+  ['recovery_created_at', 'INTEGER'],
+]) {
+  if (!userColumns.has(name)) {
+    sqlite.exec(`ALTER TABLE users ADD COLUMN ${name} ${type}`)
+  }
+}
 
 export const db = drizzle(sqlite, { schema })

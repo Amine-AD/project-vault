@@ -1,13 +1,138 @@
-import { createServerFn } from '@tanstack/react-start'
-import { getCookie, setCookie, deleteCookie } from '@tanstack/react-start/server'
-import { db } from '../db'
-import { users, sessions, vaultItems } from '../db/schema'
-import { eq, and } from 'drizzle-orm'
-import bcrypt from 'bcryptjs'
 import crypto from 'node:crypto'
+import { createServerFn } from '@tanstack/react-start'
+import {
+  deleteCookie,
+  getCookie,
+  setCookie,
+} from '@tanstack/react-start/server'
+import bcrypt from 'bcryptjs'
+import { and, eq } from 'drizzle-orm'
+import { db } from '../db'
+import { sessions, type User, users, vaultItems } from '../db/schema'
+import { NEUTRAL_METADATA, toClientRow } from './item-rows'
+import {
+  assertNotLimited,
+  recordFailure,
+  recordSuccess,
+  TooManyAttemptsError,
+} from './rate-limit'
 
 const SESSION_COOKIE_NAME = 'vault_session'
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+const INVALID_CREDENTIALS = 'Invalid email or master password.'
+const INVALID_RECOVERY = "That recovery key doesn't match this email."
+
+/** Client-made recovery kit material (see src/lib/recovery.ts). */
+interface RecoveryInput {
+  authKey: string
+  wrappedKey: string
+}
+
+interface ReEncryptedItem {
+  id: string
+  encryptedData: string
+}
+
+/** The lockout message if the account or caller is locked out, else null. */
+function lockoutError(account: string): string | null {
+  try {
+    assertNotLimited(account)
+    return null
+  } catch (err) {
+    if (err instanceof TooManyAttemptsError) return err.message
+    throw err
+  }
+}
+
+/**
+ * Checks a secret against its bcrypt hash with lockout accounting. Recovery
+ * attempts are counted separately from password attempts.
+ */
+function verifySecret(
+  account: string,
+  secret: string,
+  hash: string | null | undefined,
+): { ok: true } | { ok: false; error: string | null } {
+  const locked = lockoutError(account)
+  if (locked) return { ok: false, error: locked }
+  if (!hash || !bcrypt.compareSync(secret, hash)) {
+    recordFailure(account)
+    return { ok: false, error: null }
+  }
+  recordSuccess(account)
+  return { ok: true }
+}
+
+/** Columns for a new recovery kit, or for clearing it (null). */
+function recoveryColumns(recovery: RecoveryInput | null | undefined) {
+  return recovery
+    ? {
+        recoveryAuthHash: bcrypt.hashSync(recovery.authKey, 10),
+        recoveryWrappedKey: recovery.wrappedKey,
+        recoveryCreatedAt: Date.now(),
+      }
+    : {
+        recoveryAuthHash: null,
+        recoveryWrappedKey: null,
+        recoveryCreatedAt: null,
+      }
+}
+
+/** Creates a session row and sets the HttpOnly cookie. */
+function startSession(userId: string) {
+  const now = Date.now()
+  const token = crypto.randomBytes(32).toString('hex')
+  db.insert(sessions)
+    .values({
+      id: crypto.randomUUID(),
+      userId,
+      token,
+      expiresAt: now + SESSION_DURATION_MS,
+      createdAt: now,
+    })
+    .run()
+  setCookie(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: Math.floor(SESSION_DURATION_MS / 1000),
+  })
+}
+
+/** The signed-in user (full row), or null. */
+function sessionUser(): User | null {
+  const token = getCookie(SESSION_COOKIE_NAME)
+  if (!token) return null
+  const session = db
+    .select()
+    .from(sessions)
+    .where(eq(sessions.token, token))
+    .get()
+  if (!session || session.expiresAt < Date.now()) return null
+  return (
+    db.select().from(users).where(eq(users.id, session.userId)).get() ?? null
+  )
+}
+
+function requireSessionUser(): User {
+  const user = sessionUser()
+  if (!user) throw new Error('Unauthorized')
+  return user
+}
+
+/** Replaces every item's ciphertext and neutralizes its plaintext metadata. */
+function writeReEncryptedItems(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  userId: string,
+  items: ReEncryptedItem[],
+) {
+  for (const item of items) {
+    tx.update(vaultItems)
+      .set({ ...NEUTRAL_METADATA, encryptedData: item.encryptedData })
+      .where(and(eq(vaultItems.id, item.id), eq(vaultItems.userId, userId)))
+      .run()
+  }
+}
 
 // Deterministic salt generator for non-existing emails to prevent timing/enumeration attacks
 function generateFakeSalt(email: string): string {
@@ -41,7 +166,7 @@ export const getPreloginData = createServerFn({ method: 'POST' })
   })
 
 /**
- * Register user with salt and client-derived authKey
+ * Register user with salt, client-derived authKey and a recovery kit
  */
 export const registerUser = createServerFn({ method: 'POST' })
   .validator(
@@ -50,69 +175,44 @@ export const registerUser = createServerFn({ method: 'POST' })
       salt: string
       authKey: string
       kdfIterations?: number
-    }) => data
+      recovery?: RecoveryInput
+    }) => data,
   )
   .handler(async ({ data }) => {
     const email = data.email.toLowerCase().trim()
 
-    // Validate email format
-    if (!email || !email.includes('@')) {
+    if (!email?.includes('@')) {
       return { success: false, error: 'Please enter a valid email address.' }
     }
 
-    // Check if user already exists
     const existing = db.select().from(users).where(eq(users.email, email)).get()
     if (existing) {
-      return { success: false, error: 'An account with this email already exists.' }
+      return {
+        success: false,
+        error: 'An account with this email already exists.',
+      }
     }
 
-    // Hash the client-derived authKey on server before storage
-    const authHash = bcrypt.hashSync(data.authKey, 10)
     const userId = crypto.randomUUID()
     const now = Date.now()
-    const iterations = data.kdfIterations || 600000
 
     db.insert(users)
       .values({
         id: userId,
         email,
         salt: data.salt,
-        authHash,
-        kdfIterations: iterations,
+        // Hash the client-derived authKey on server before storage
+        authHash: bcrypt.hashSync(data.authKey, 10),
+        kdfIterations: data.kdfIterations || 600000,
+        ...recoveryColumns(data.recovery),
         createdAt: now,
         updatedAt: now,
       })
       .run()
 
-    // Create session
-    const sessionToken = crypto.randomBytes(32).toString('hex')
-    const expiresAt = now + SESSION_DURATION_MS
+    startSession(userId)
 
-    db.insert(sessions)
-      .values({
-        id: crypto.randomUUID(),
-        userId,
-        token: sessionToken,
-        expiresAt,
-        createdAt: now,
-      })
-      .run()
-
-    // Set HttpOnly session cookie
-    setCookie(SESSION_COOKIE_NAME, sessionToken, {
-      httpOnly: true,
-      sameSite: 'lax',
-      path: '/',
-      maxAge: Math.floor(SESSION_DURATION_MS / 1000),
-    })
-
-    return {
-      success: true,
-      user: {
-        id: userId,
-        email,
-      },
-    }
+    return { success: true, user: { id: userId, email } }
   })
 
 /**
@@ -124,43 +224,17 @@ export const loginUser = createServerFn({ method: 'POST' })
     const email = data.email.toLowerCase().trim()
     const user = db.select().from(users).where(eq(users.email, email)).get()
 
-    if (!user) {
-      return { success: false, error: 'Invalid email or master password.' }
+    const check = verifySecret(email, data.authKey, user?.authHash)
+    if (!check.ok || !user) {
+      return {
+        success: false,
+        error: (!check.ok && check.error) || INVALID_CREDENTIALS,
+      }
     }
 
-    const matches = bcrypt.compareSync(data.authKey, user.authHash)
-    if (!matches) {
-      return { success: false, error: 'Invalid email or master password.' }
-    }
+    startSession(user.id)
 
-    const now = Date.now()
-    const sessionToken = crypto.randomBytes(32).toString('hex')
-    const expiresAt = now + SESSION_DURATION_MS
-
-    db.insert(sessions)
-      .values({
-        id: crypto.randomUUID(),
-        userId: user.id,
-        token: sessionToken,
-        expiresAt,
-        createdAt: now,
-      })
-      .run()
-
-    setCookie(SESSION_COOKIE_NAME, sessionToken, {
-      httpOnly: true,
-      sameSite: 'lax',
-      path: '/',
-      maxAge: Math.floor(SESSION_DURATION_MS / 1000),
-    })
-
-    return {
-      success: true,
-      user: {
-        id: user.id,
-        email: user.email,
-      },
-    }
+    return { success: true, user: { id: user.id, email: user.email } }
   })
 
 /**
@@ -175,7 +249,7 @@ export const logoutUser = createServerFn({ method: 'POST' }).handler(
 
     deleteCookie(SESSION_COOKIE_NAME, { path: '/' })
     return { success: true }
-  }
+  },
 )
 
 /**
@@ -183,39 +257,19 @@ export const logoutUser = createServerFn({ method: 'POST' }).handler(
  */
 export const getCurrentUser = createServerFn({ method: 'GET' }).handler(
   async () => {
-    const token = getCookie(SESSION_COOKIE_NAME)
-    if (!token) {
-      return { user: null }
-    }
-
-    const session = db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.token, token))
-      .get()
-
-    if (!session || session.expiresAt < Date.now()) {
-      deleteCookie(SESSION_COOKIE_NAME, { path: '/' })
-      return { user: null }
-    }
-
-    const user = db
-      .select({ id: users.id, email: users.email })
-      .from(users)
-      .where(eq(users.id, session.userId))
-      .get()
-
+    const user = sessionUser()
     if (!user) {
       deleteCookie(SESSION_COOKIE_NAME, { path: '/' })
       return { user: null }
     }
-
-    return { user }
-  }
+    return { user: { id: user.id, email: user.email } }
+  },
 )
 
 /**
- * Change master password and update all re-encrypted items
+ * Change master password, re-encrypting every item. The old recovery kit
+ * wraps the old vault key, so it's replaced by the new one sent along (or
+ * cleared if none is sent).
  */
 export const changeMasterPassword = createServerFn({ method: 'POST' })
   .validator(
@@ -223,60 +277,156 @@ export const changeMasterPassword = createServerFn({ method: 'POST' })
       oldAuthKey: string
       newSalt: string
       newAuthKey: string
-      reEncryptedItems: Array<{ id: string; encryptedData: string }>
-    }) => data
+      reEncryptedItems: ReEncryptedItem[]
+      newRecovery?: RecoveryInput
+    }) => data,
   )
   .handler(async ({ data }) => {
-    const token = getCookie(SESSION_COOKIE_NAME)
-    if (!token) throw new Error('Unauthorized')
+    const user = requireSessionUser()
 
-    const session = db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.token, token))
-      .get()
-
-    if (!session || session.expiresAt < Date.now()) {
-      throw new Error('Unauthorized')
+    const check = verifySecret(user.email, data.oldAuthKey, user.authHash)
+    if (!check.ok) {
+      return {
+        success: false,
+        error: check.error ?? 'Current master password is incorrect.',
+      }
     }
-
-    const user = db
-      .select()
-      .from(users)
-      .where(eq(users.id, session.userId))
-      .get()
-
-    if (!user) throw new Error('User not found')
-
-    const matches = bcrypt.compareSync(data.oldAuthKey, user.authHash)
-    if (!matches) {
-      return { success: false, error: 'Current master password is incorrect.' }
-    }
-
-    const newAuthHash = bcrypt.hashSync(data.newAuthKey, 10)
-    const now = Date.now()
 
     db.transaction((tx) => {
       tx.update(users)
         .set({
           salt: data.newSalt,
-          authHash: newAuthHash,
-          updatedAt: now,
+          authHash: bcrypt.hashSync(data.newAuthKey, 10),
+          ...recoveryColumns(data.newRecovery),
+          updatedAt: Date.now(),
         })
         .where(eq(users.id, user.id))
         .run()
-
-      for (const item of data.reEncryptedItems) {
-        tx.update(vaultItems)
-          .set({
-            encryptedData: item.encryptedData,
-            updatedAt: now,
-          })
-          .where(and(eq(vaultItems.id, item.id), eq(vaultItems.userId, user.id)))
-          .run()
-      }
+      writeReEncryptedItems(tx, user.id, data.reEncryptedItems)
     })
 
     return { success: true }
   })
 
+/**
+ * When the signed-in user's recovery kit was created (null if never).
+ */
+export const getRecoveryStatus = createServerFn({ method: 'GET' }).handler(
+  async () => {
+    const user = requireSessionUser()
+    return { createdAt: user.recoveryCreatedAt ?? null }
+  },
+)
+
+/**
+ * Create or replace the recovery kit. Needs the master password (as its
+ * authKey), since a new kit replaces the old one.
+ */
+export const setRecoveryKit = createServerFn({ method: 'POST' })
+  .validator((data: { authKey: string; recovery: RecoveryInput }) => data)
+  .handler(async ({ data }) => {
+    const user = requireSessionUser()
+
+    const check = verifySecret(user.email, data.authKey, user.authHash)
+    if (!check.ok) {
+      return {
+        success: false,
+        error: check.error ?? 'Master password is incorrect.',
+      }
+    }
+
+    const columns = recoveryColumns(data.recovery)
+    db.update(users).set(columns).where(eq(users.id, user.id)).run()
+
+    return { success: true, createdAt: columns.recoveryCreatedAt }
+  })
+
+/**
+ * Recovery step 1: prove possession of the recovery key and receive the
+ * wrapped vault key plus the encrypted items, so the browser can decrypt
+ * them and re-encrypt under a new master password.
+ */
+export const startRecovery = createServerFn({ method: 'POST' })
+  .validator((data: { email: string; recoveryAuthKey: string }) => data)
+  .handler(async ({ data }) => {
+    const email = data.email.toLowerCase().trim()
+    const user = db.select().from(users).where(eq(users.email, email)).get()
+
+    const check = verifySecret(
+      `recover:${email}`,
+      data.recoveryAuthKey,
+      user?.recoveryAuthHash,
+    )
+    if (!check.ok || !user?.recoveryWrappedKey) {
+      return {
+        success: false as const,
+        error: (!check.ok && check.error) || INVALID_RECOVERY,
+      }
+    }
+
+    const items = db
+      .select()
+      .from(vaultItems)
+      .where(eq(vaultItems.userId, user.id))
+      .all()
+      .map(toClientRow)
+
+    return {
+      success: true as const,
+      wrappedKey: user.recoveryWrappedKey,
+      kdfIterations: user.kdfIterations,
+      items,
+    }
+  })
+
+/**
+ * Recovery step 2: set the new master password, store the re-encrypted
+ * items and a fresh recovery kit, sign out every other session and sign in.
+ */
+export const completeRecovery = createServerFn({ method: 'POST' })
+  .validator(
+    (data: {
+      email: string
+      recoveryAuthKey: string
+      newSalt: string
+      newAuthKey: string
+      reEncryptedItems: ReEncryptedItem[]
+      newRecovery: RecoveryInput
+    }) => data,
+  )
+  .handler(async ({ data }) => {
+    const email = data.email.toLowerCase().trim()
+    const user = db.select().from(users).where(eq(users.email, email)).get()
+
+    const check = verifySecret(
+      `recover:${email}`,
+      data.recoveryAuthKey,
+      user?.recoveryAuthHash,
+    )
+    if (!check.ok || !user) {
+      return {
+        success: false as const,
+        error: (!check.ok && check.error) || INVALID_RECOVERY,
+      }
+    }
+
+    db.transaction((tx) => {
+      tx.update(users)
+        .set({
+          salt: data.newSalt,
+          authHash: bcrypt.hashSync(data.newAuthKey, 10),
+          ...recoveryColumns(data.newRecovery),
+          updatedAt: Date.now(),
+        })
+        .where(eq(users.id, user.id))
+        .run()
+      writeReEncryptedItems(tx, user.id, data.reEncryptedItems)
+      // Whoever was signed in with the forgotten password is signed out
+      tx.delete(sessions).where(eq(sessions.userId, user.id)).run()
+    })
+
+    recordSuccess(user.email)
+    startSession(user.id)
+
+    return { success: true as const, user: { id: user.id, email: user.email } }
+  })

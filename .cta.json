@@ -1,5 +1,5 @@
 {
-  "projectName": "password-clone",
+  "projectName": "project-vault",
   "mode": "file-router",
   "bundler": "vite",
   "typescript": true,
