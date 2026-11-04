@@ -31,7 +31,7 @@ export const LEGAL = {
    */
   sourceCodeUrl: 'https://github.com/Amine-AD/project-vault',
   /** The full license text (same as the LICENSE file in the repository). */
-  licenseUrl: 'https://www.gnu.org/licenses/agpl-3.0.html',
+  licenseUrl: 'https://github.com/Amine-AD/project-vault/blob/main/LICENSE',
   /** Days after purchase in which a refund can be asked for. */
   refundDays: 14,
   /** Minimum age to use the service. */

@@ -2,9 +2,11 @@
 
 ## Reporting a vulnerability
 
-Please don't open a public issue. Email the address in
-`src/features/website/legal/legal-info.ts` with the details and steps to
-reproduce. You'll get a reply within a few days.
+Please don't open a public issue. Report it privately on GitHub: the
+repository's **Security** tab → **Report a vulnerability**
+(<https://github.com/Amine-AD/project-vault/security/advisories/new>).
+Include the details and steps to reproduce. You'll get a reply within a few
+days, and credit in the fix's release notes if you'd like.
 
 ## How the vault is protected
 

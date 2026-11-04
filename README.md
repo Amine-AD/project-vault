@@ -26,8 +26,16 @@ This summary isn't legal advice; the [LICENSE](LICENSE) text is what counts.
 ### Name and logo
 
 The license covers the code, not the **OneVault** name or logo. If you
-offer a modified version to others, please give it a different name and
-logo so people don't mistake it for the official service.
+offer a modified version to others, give it its own name and logo so people
+don't mistake it for the official service. See
+[TRADEMARK.md](TRADEMARK.md) for what's allowed without asking.
+
+### Contributing
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). First-time
+contributors sign a short [Contributor License Agreement](CLA.md) by
+commenting on their pull request. You keep your copyright. Security issues
+go through [SECURITY.md](SECURITY.md), not public issues.
 
 ---
 
