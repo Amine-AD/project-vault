@@ -2,7 +2,6 @@ import { DownloadIcon, Trash2Icon, UploadIcon } from 'lucide-react'
 import { useState } from 'react'
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogBody,
   AlertDialogCancel,
   AlertDialogContent,
@@ -16,6 +15,9 @@ import { Field, FieldLabel } from '#/components/ui/field'
 import { Input } from '#/components/ui/input'
 import { toast } from '#/components/ui/toast'
 import { useVault } from '#/context/VaultContext'
+import { FormAlert } from '#/features/auth/components/form-alert'
+import { MasterPasswordInput } from '#/features/auth/components/master-password-input'
+import { getErrorMessage } from '#/features/auth/utils'
 import { ImportExportDialog } from '#/features/vault/import-export-dialog'
 import { downloadJson, todayStamp } from '#/features/vault/utils'
 import { SettingRow, SettingsSection } from './components/setting-row'
@@ -118,20 +120,31 @@ export function DataSettings() {
 function EraseAllButton() {
   const { items, eraseAllItems } = useVault()
   const [open, setOpen] = useState(false)
+  const [password, setPassword] = useState('')
   const [phrase, setPhrase] = useState('')
+  const [error, setError] = useState<string | null>(null)
   const [isErasing, setIsErasing] = useState(false)
 
+  const confirmed = phrase === CONFIRM_PHRASE
+
+  const reset = () => {
+    setPassword('')
+    setPhrase('')
+    setError(null)
+  }
+
   const handleErase = async () => {
+    if (!password) return setError('Enter your master password.')
+    if (!confirmed) return setError(`Type ${CONFIRM_PHRASE} to confirm.`)
     setIsErasing(true)
+    setError(null)
     try {
-      await eraseAllItems()
+      await eraseAllItems(password)
       setOpen(false)
+      reset()
       toast.success({ title: 'Vault erased' })
-    } catch (error) {
-      toast.error({
-        title: 'Could not erase items',
-        description: error instanceof Error ? error.message : undefined,
-      })
+    } catch (err) {
+      setError(getErrorMessage(err, 'Could not erase your items.'))
     } finally {
       setIsErasing(false)
     }
@@ -142,7 +155,7 @@ function EraseAllButton() {
       open={open}
       onOpenChange={({ open }) => {
         setOpen(open)
-        if (!open) setPhrase('')
+        if (!open) reset()
       }}
     >
       <AlertDialogTrigger asChild>
@@ -152,42 +165,61 @@ function EraseAllButton() {
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent size="sm">
-        <AlertDialogHeader
-          title={
-            items.length === 1
-              ? 'Erase your only item?'
-              : `Erase all ${items.length} items?`
-          }
-          description="Every login, note, password and custom field is deleted from the database. This can't be undone."
-        />
-        <AlertDialogBody>
-          <Field>
-            <FieldLabel>
-              Type{' '}
-              <span className="font-mono text-destructive">
-                {CONFIRM_PHRASE}
-              </span>{' '}
-              to confirm
-            </FieldLabel>
-            <Input
-              autoComplete="off"
-              className="font-mono"
-              onChange={(e) => setPhrase(e.target.value)}
-              value={phrase}
-            />
-          </Field>
-        </AlertDialogBody>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={phrase !== CONFIRM_PHRASE}
-            isLoading={isErasing}
-            onClick={handleErase}
-            variant="destructive"
-          >
-            Erase everything
-          </AlertDialogAction>
-        </AlertDialogFooter>
+        <form
+          className="contents"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleErase()
+          }}
+        >
+          <AlertDialogHeader
+            title={
+              items.length === 1
+                ? 'Erase your only item?'
+                : `Erase all ${items.length} items?`
+            }
+            description="Every login, note, password and custom field is deleted from the database. This can't be undone."
+          />
+          <AlertDialogBody className="space-y-4">
+            <FormAlert message={error} />
+            <Field>
+              <FieldLabel>Master password</FieldLabel>
+              <MasterPasswordInput
+                autoComplete="current-password"
+                autoFocus
+                onChange={(e) => setPassword(e.target.value)}
+                value={password}
+              />
+            </Field>
+            <Field>
+              <FieldLabel>
+                Type{' '}
+                <span className="font-mono text-destructive">
+                  {CONFIRM_PHRASE}
+                </span>{' '}
+                to confirm
+              </FieldLabel>
+              <Input
+                autoComplete="off"
+                className="font-mono"
+                onChange={(e) => setPhrase(e.target.value)}
+                spellCheck={false}
+                value={phrase}
+              />
+            </Field>
+          </AlertDialogBody>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <Button
+              disabled={!confirmed || !password}
+              isLoading={isErasing}
+              type="submit"
+              variant="destructive"
+            >
+              Erase everything
+            </Button>
+          </AlertDialogFooter>
+        </form>
       </AlertDialogContent>
     </AlertDialog>
   )

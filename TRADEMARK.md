@@ -1,7 +1,7 @@
 # OneVault Trademark Policy
 
 "OneVault", the OneVault logo (the keyhole mark) and the OneVault wordmark
-are trademarks of the OneVault maintainer ([Amine-AD](https://github.com/Amine-AD)),
+are trademarks of the OneVault maintainer ([Amine Daimallah](https://github.com/Amine-AD)),
 whether registered or not. The source code is open source under the
 [AGPL-3.0](LICENSE). That license covers the code only; it does not give any
 rights to the name or logo.

@@ -3,8 +3,8 @@ import { createServerFn } from '@tanstack/react-start'
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { db } from '../db'
 import { lockedVaults, vaultItems } from '../db/schema'
-import { requireSessionUser } from './guards'
-import { NEUTRAL_METADATA, toClientRow } from './item-rows'
+import { requireSessionUser, verifySecret } from './guards'
+import { toClientRow } from './item-rows'
 import {
   checkLockedVaultProof,
   type LockedVaultProof,
@@ -69,7 +69,7 @@ export const openLockedVault = createServerFn({ method: 'POST' })
     const vault = findLockedVault(user.id, data.id)
     if (!vault) return { success: false as const, error: NOT_FOUND }
 
-    const check = checkLockedVaultProof(vault, data.proof)
+    const check = await checkLockedVaultProof(vault, data.proof)
     if (!check.ok) return { success: false as const, error: check.error }
 
     return {
@@ -97,7 +97,7 @@ export const restoreLockedVault = createServerFn({ method: 'POST' })
     const vault = findLockedVault(user.id, data.id)
     if (!vault) return { success: false as const, error: NOT_FOUND }
 
-    const check = checkLockedVaultProof(vault, data.proof)
+    const check = await checkLockedVaultProof(vault, data.proof)
     if (!check.ok) return { success: false as const, error: check.error }
 
     const items = parseItemList(data.items)
@@ -133,7 +133,6 @@ export const restoreLockedVault = createServerFn({ method: 'POST' })
       for (const row of locked) {
         tx.insert(vaultItems)
           .values({
-            ...NEUTRAL_METADATA,
             id: taken.has(row.id) ? crypto.randomUUID() : row.id,
             userId: user.id,
             encryptedData: sent.get(row.id) as string,
@@ -148,11 +147,22 @@ export const restoreLockedVault = createServerFn({ method: 'POST' })
     return { success: true as const, count: locked.length }
   })
 
-/** Permanently deletes a locked vault the user has given up on. */
+/**
+ * Permanently deletes a locked vault the user has given up on. Needs the
+ * current master password (as its authKey): it may be the user's last copy
+ * of those items, so a session alone mustn't be enough.
+ */
 export const deleteLockedVault = createServerFn({ method: 'POST' })
-  .validator((data: { id: string }) => data)
+  .validator((data: { id: string; authKey: string }) => data)
   .handler(async ({ data }) => {
     const user = requireSessionUser()
+    const check = await verifySecret(user.email, data.authKey, user.authHash)
+    if (!check.ok) {
+      return {
+        success: false as const,
+        error: check.error ?? 'Master password is incorrect.',
+      }
+    }
     db.delete(lockedVaults)
       .where(
         and(
@@ -161,5 +171,5 @@ export const deleteLockedVault = createServerFn({ method: 'POST' })
         ),
       )
       .run()
-    return { success: true }
+    return { success: true as const }
   })

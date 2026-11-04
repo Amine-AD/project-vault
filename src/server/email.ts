@@ -1,10 +1,9 @@
-import fs from 'node:fs'
-import path from 'node:path'
+import './env'
 
 /**
  * Transactional email through Resend (https://resend.com).
  *
- * Settings come from the environment (or a .env file in the project root):
+ * Settings come from the environment (or .env, see ./env.ts):
  *  - RESEND_API_KEY  Resend API key. Without it, emails are printed to the
  *                    server console instead, which is handy in development.
  *  - EMAIL_FROM      Sender, e.g. "OneVault <security@yourdomain.com>". Must
@@ -13,16 +12,6 @@ import path from 'node:path'
  *
  * Emails never contain vault data, master passwords or recovery keys.
  */
-
-const envFile = path.resolve(process.cwd(), '.env')
-if (fs.existsSync(envFile)) {
-  try {
-    // Doesn't override variables that are already set
-    process.loadEnvFile(envFile)
-  } catch (err) {
-    console.error('[email] Could not read .env', err)
-  }
-}
 
 const APP_NAME = 'OneVault'
 

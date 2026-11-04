@@ -1,5 +1,4 @@
 import crypto from 'node:crypto'
-import bcrypt from 'bcryptjs'
 import { and, eq, ne } from 'drizzle-orm'
 import { db } from '../db'
 import {
@@ -11,7 +10,7 @@ import {
   type VaultItemRow,
   vaultItems,
 } from '../db/schema'
-import { verifySecret } from './guards'
+import { hashSecret, verifySecret } from './guards'
 import { isWrappedKey } from './validation'
 
 /**
@@ -44,17 +43,46 @@ function isDeviceInput(value: unknown): value is DeviceInput {
   )
 }
 
+/** A valid device input with its proof token already hashed. */
+export interface PreparedDevice {
+  id: string
+  name: string
+  authHash: string
+  wrappedKey: string
+}
+
+/**
+ * Checks a device input and hashes its proof token, ready for saveDevice.
+ * Null for missing or malformed input (the browser isn't trusted then).
+ * Separate from saveDevice because hashing is async and a database
+ * transaction can't wait for it.
+ */
+export async function prepareDevice(
+  device: unknown,
+): Promise<PreparedDevice | null> {
+  if (!isDeviceInput(device)) return null
+  return {
+    id: device.id,
+    name: device.name.trim().slice(0, 80) || 'Unknown device',
+    authHash: await hashSecret(device.authToken),
+    wrappedKey: device.wrappedKey,
+  }
+}
+
 /**
  * Trusts a browser for `userId`, or refreshes it (a new vault key after a
- * password change, or just its last-used time). Ignores bad input and ids
- * that belong to another account. Only call after the caller has proven
- * they can open the vault.
+ * password change, or just its last-used time). Ignores ids that belong to
+ * another account. Only call after the caller has proven they can open the
+ * vault.
  */
-export function saveDevice(tx: Db, userId: string, device: unknown) {
-  if (!isDeviceInput(device)) return
+export function saveDevice(
+  tx: Db,
+  userId: string,
+  device: PreparedDevice | null,
+) {
+  if (!device) return
+  const { name, authHash } = device
   const now = Date.now()
-  const name = device.name.trim().slice(0, 80) || 'Unknown device'
-  const authHash = bcrypt.hashSync(device.authToken, 10)
   const existing = tx
     .select({ userId: trustedDevices.userId })
     .from(trustedDevices)
@@ -114,11 +142,13 @@ export interface DeviceProofInput {
  * Checks that the caller is a trusted device of `user` and returns its
  * wrapped vault key. Failures count toward a per-email lockout.
  */
-export function checkDeviceProof(
+export async function checkDeviceProof(
   email: string,
   user: User | undefined,
   proof: DeviceProofInput,
-): { ok: true; wrappedKey: string } | { ok: false; error: string | null } {
+): Promise<
+  { ok: true; wrappedKey: string } | { ok: false; error: string | null }
+> {
   const device = user
     ? db
         .select()
@@ -131,7 +161,7 @@ export function checkDeviceProof(
         )
         .get()
     : undefined
-  const check = verifySecret(
+  const check = await verifySecret(
     `device:${email}`,
     proof?.authToken,
     device?.authHash,
@@ -212,16 +242,14 @@ export type LockedVaultProof =
   | { kind: 'device'; deviceId: string; authToken: string }
 
 /**
- * Checks a proof against a locked vault. Returns the vault key wrapped for
- * that proof: by the recovery key, the device, or the master key derived
- * from the old password (null for a vault made before the random vault key,
- * whose items the old master key opens directly). Failures count toward a
- * per-vault lockout.
+ * Checks a proof against a locked vault. Returns the old vault key wrapped
+ * for that proof: by the recovery key, the device, or the master key derived
+ * from the old password. Failures count toward a per-vault lockout.
  */
-export function checkLockedVaultProof(
+export async function checkLockedVaultProof(
   vault: LockedVault,
   proof: LockedVaultProof,
-): { ok: true; wrappedKey: string | null } | { ok: false; error: string } {
+): Promise<{ ok: true; wrappedKey: string } | { ok: false; error: string }> {
   const account = `locked:${vault.id}`
   const fail = (error: string | null) => ({
     ok: false as const,
@@ -230,13 +258,17 @@ export function checkLockedVaultProof(
 
   switch (proof?.kind) {
     case 'password': {
-      const check = verifySecret(account, proof.authKey, vault.authHash)
+      const check = await verifySecret(account, proof.authKey, vault.authHash)
       return check.ok
         ? { ok: true, wrappedKey: vault.encryptedVaultKey }
         : fail(check.error)
     }
     case 'recoveryKey': {
-      const check = verifySecret(account, proof.authKey, vault.recoveryAuthHash)
+      const check = await verifySecret(
+        account,
+        proof.authKey,
+        vault.recoveryAuthHash,
+      )
       if (!check.ok || !vault.recoveryWrappedKey) {
         return fail(check.ok ? null : check.error)
       }
@@ -246,7 +278,11 @@ export function checkLockedVaultProof(
       const device = lockedVaultDevices(vault).find(
         (d) => d.id === proof.deviceId,
       )
-      const check = verifySecret(account, proof.authToken, device?.authHash)
+      const check = await verifySecret(
+        account,
+        proof.authToken,
+        device?.authHash,
+      )
       if (!check.ok || !device) return fail(check.ok ? null : check.error)
       return { ok: true, wrappedKey: device.wrappedKey }
     }

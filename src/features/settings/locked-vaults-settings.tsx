@@ -2,7 +2,7 @@ import { ArchiveRestoreIcon, LockIcon, Trash2Icon } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import {
   AlertDialog,
-  AlertDialogAction,
+  AlertDialogBody,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogFooter,
@@ -25,7 +25,7 @@ import { FormAlert } from '#/features/auth/components/form-alert'
 import { MasterPasswordInput } from '#/features/auth/components/master-password-input'
 import { getErrorMessage } from '#/features/auth/utils'
 import { getDeviceId } from '#/lib/trusted-device'
-import { deleteLockedVault, listLockedVaults } from '#/server/locked-vaults'
+import { listLockedVaults } from '#/server/locked-vaults'
 import { SettingRow, SettingsSection } from './components/setting-row'
 
 type LockedVault = Awaited<ReturnType<typeof listLockedVaults>>[number]
@@ -284,21 +284,29 @@ function DeleteDialog({
   onClose: () => void
   onDeleted: () => void
 }) {
+  const { deleteLockedVault } = useVault()
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  const close = () => {
+    setPassword('')
+    setError(null)
+    onClose()
+  }
 
   const remove = async () => {
     if (!vault) return
+    if (!password) return setError('Enter your master password.')
     setBusy(true)
+    setError(null)
     try {
-      await deleteLockedVault({ data: { id: vault.id } })
-      onClose()
+      await deleteLockedVault(vault.id, password)
+      close()
       onDeleted()
       toast.success({ title: 'Locked items deleted' })
     } catch (err) {
-      toast.error({
-        title: 'Could not delete these items',
-        description: getErrorMessage(err, 'Try again.'),
-      })
+      setError(getErrorMessage(err, 'Could not delete these items.'))
     } finally {
       setBusy(false)
     }
@@ -307,25 +315,46 @@ function DeleteDialog({
   return (
     <AlertDialog
       onOpenChange={({ open }) => {
-        if (!open) onClose()
+        if (!open) close()
       }}
       open={!!vault}
     >
       <AlertDialogContent size="sm">
-        <AlertDialogHeader
-          description="If you ever find your old master password or recovery key, these items would be gone for good. This can’t be undone."
-          title={`Delete ${itemsLabel(vault?.itemCount ?? 0)} for good?`}
-        />
-        <AlertDialogFooter>
-          <AlertDialogCancel>Keep them</AlertDialogCancel>
-          <AlertDialogAction
-            isLoading={busy}
-            onClick={remove}
-            variant="destructive"
-          >
-            Delete for good
-          </AlertDialogAction>
-        </AlertDialogFooter>
+        <form
+          className="contents"
+          onSubmit={(e) => {
+            e.preventDefault()
+            remove()
+          }}
+        >
+          <AlertDialogHeader
+            description="If you ever find your old master password or recovery key, these items would be gone for good. This can’t be undone."
+            title={`Delete ${itemsLabel(vault?.itemCount ?? 0)} for good?`}
+          />
+          <AlertDialogBody className="space-y-4">
+            <FormAlert message={error} />
+            <Field>
+              <FieldLabel>Your current master password</FieldLabel>
+              <MasterPasswordInput
+                autoComplete="current-password"
+                autoFocus
+                onChange={(e) => setPassword(e.target.value)}
+                value={password}
+              />
+            </Field>
+          </AlertDialogBody>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep them</AlertDialogCancel>
+            <Button
+              disabled={!password}
+              isLoading={busy}
+              type="submit"
+              variant="destructive"
+            >
+              Delete for good
+            </Button>
+          </AlertDialogFooter>
+        </form>
       </AlertDialogContent>
     </AlertDialog>
   )

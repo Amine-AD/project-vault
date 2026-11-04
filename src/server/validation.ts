@@ -130,36 +130,27 @@ export function parsePasswordKeys(input: unknown): PasswordKeysInput | null {
 
 /** The users / locked_vaults columns for a set of KDF settings. */
 export function kdfColumns(kdf: KdfParams) {
-  return kdf.algorithm === 'argon2id'
-    ? {
-        kdfAlgorithm: kdf.algorithm,
-        kdfIterations: kdf.iterations,
-        kdfMemoryKiB: kdf.memoryKiB,
-        kdfParallelism: kdf.parallelism,
-      }
-    : {
-        kdfAlgorithm: kdf.algorithm,
-        kdfIterations: kdf.iterations,
-        kdfMemoryKiB: null,
-        kdfParallelism: null,
-      }
+  return {
+    kdfAlgorithm: kdf.algorithm,
+    kdfIterations: kdf.iterations,
+    kdfMemoryKiB: kdf.memoryKiB,
+    kdfParallelism: kdf.parallelism,
+  }
 }
 
 /** KDF settings from a users / locked_vaults row. */
 export function kdfFromRow(row: {
   kdfAlgorithm: string
   kdfIterations: number
-  kdfMemoryKiB: number | null
-  kdfParallelism: number | null
+  kdfMemoryKiB: number
+  kdfParallelism: number
 }): KdfParams {
-  return row.kdfAlgorithm === 'argon2id'
-    ? {
-        algorithm: 'argon2id',
-        iterations: row.kdfIterations,
-        memoryKiB: row.kdfMemoryKiB ?? 0,
-        parallelism: row.kdfParallelism ?? 1,
-      }
-    : { algorithm: 'pbkdf2-sha256', iterations: row.kdfIterations }
+  return {
+    algorithm: row.kdfAlgorithm as KdfParams['algorithm'],
+    iterations: row.kdfIterations,
+    memoryKiB: row.kdfMemoryKiB,
+    parallelism: row.kdfParallelism,
+  }
 }
 
 export const INVALID_REQUEST = 'Invalid request. Reload the page and try again.'

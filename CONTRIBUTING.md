@@ -31,8 +31,22 @@ npm run build          # production build
 
 Then go through the parts of [docs/TESTING.md](docs/TESTING.md) your change
 touches. If it changes key derivation, encryption, recovery or what the
-server stores, also update [SECURITY.md](SECURITY.md) and test section 21
-(upgrading vaults made by older versions).
+server stores, also update [SECURITY.md](SECURITY.md). Changes to what's
+stored need a migration (see below).
+
+## Changing the database
+
+`src/db/schema.ts` is the only definition of the database. To change it:
+
+1. Edit `src/db/schema.ts`.
+2. Run `npm run db:generate -- --name short_description`. This writes a
+   numbered SQL migration to `drizzle/`. Read it before committing.
+3. Restart the app: it applies pending migrations on startup, in order.
+4. Commit the schema change and the new files in `drizzle/` together.
+
+Never edit, rename or delete a migration once it's been released:
+self-hosted installs have already run it. Fix mistakes with a new
+migration. `npm run db:check` checks the migration files are consistent.
 
 ## Licensing of contributions
 

@@ -39,24 +39,18 @@ export function generateSalt(): string {
 }
 
 /**
- * Runs the account's KDF on the master password and splits the 64-byte
- * result:
+ * Runs Argon2id on the master password and splits the 64-byte result:
  * 1. Master key (first 32 bytes): AES-256-GCM key that wraps the vault key.
- *    It never leaves the browser. In vaults made before the random vault key
- *    (no encryptedVaultKey on the server), it encrypts the items directly.
+ *    It never leaves the browser.
  * 2. Auth key (last 32 bytes, SHA-256 hashed): sent to the server to sign in.
- *    The server bcrypt-hashes it again; it can't be turned into the master
+ *    The server hashes it again (scrypt); it can't be turned into the master
  *    key.
  */
 export async function deriveMasterKey(
   masterPassword: string,
   saltBase64: string,
   kdf: KdfParams,
-): Promise<{
-  masterKey: CryptoKey
-  rawMasterKey: Uint8Array
-  authKey: string
-}> {
+): Promise<{ masterKey: CryptoKey; authKey: string }> {
   const derivedBytes = await runKdf(
     new TextEncoder().encode(masterPassword),
     base64ToBuffer(saltBase64),
@@ -71,48 +65,26 @@ export async function deriveMasterKey(
     await window.crypto.subtle.digest('SHA-256', authKeyBytes),
   )
 
-  // rawMasterKey is only needed for legacy vaults, where it is the vault key
-  return { masterKey, rawMasterKey: masterKeyBytes, authKey }
+  return { masterKey, authKey }
 }
 
-/** 64 bytes from the master password, using the account's KDF. */
+/** 64 bytes from the master password, using the account's KDF settings. */
 async function runKdf(
   password: Uint8Array,
   salt: Uint8Array,
   kdf: KdfParams,
 ): Promise<Uint8Array> {
-  if (kdf.algorithm === 'argon2id') {
-    // Loaded on demand: the WebAssembly module is only needed to unlock
-    const { argon2id } = await import('hash-wasm')
-    return argon2id({
-      password,
-      salt,
-      iterations: kdf.iterations,
-      memorySize: kdf.memoryKiB,
-      parallelism: kdf.parallelism,
-      hashLength: 64,
-      outputType: 'binary',
-    })
-  }
-
-  const baseKey = await window.crypto.subtle.importKey(
-    'raw',
-    password as BufferSource,
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  )
-  const bits = await window.crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt: salt as BufferSource,
-      iterations: kdf.iterations,
-      hash: 'SHA-256',
-    },
-    baseKey,
-    512,
-  )
-  return new Uint8Array(bits)
+  // Loaded on demand: the WebAssembly module is only needed to unlock
+  const { argon2id } = await import('hash-wasm')
+  return argon2id({
+    password,
+    salt,
+    iterations: kdf.iterations,
+    memorySize: kdf.memoryKiB,
+    parallelism: kdf.parallelism,
+    hashLength: 64,
+    outputType: 'binary',
+  })
 }
 
 /** A non-extractable AES-256-GCM key from 32 raw bytes. */

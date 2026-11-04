@@ -7,7 +7,7 @@ A zero-knowledge password manager you can self-host. See
 
 OneVault is free software, licensed under the
 [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
-Copyright © 2026 Amine-AD.
+Copyright © 2026 Amine Daimallah (Amine-AD).
 
 In short:
 

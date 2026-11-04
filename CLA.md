@@ -13,7 +13,7 @@ contributions to OneVault.
 - **"You"**: the person, or the organization they represent, who accepts
   this agreement.
 - **"Maintainer"**: the owner of the OneVault project, currently
-  [Amine-AD](https://github.com/Amine-AD), and any successor to the project,
+  [Amine Daimallah](https://github.com/Amine-AD), and any successor to the project,
   including a company they form to run it.
 - **"Contribution"**: any code, documentation, design or other work you
   submit to OneVault through a pull request, commit, issue, comment or any

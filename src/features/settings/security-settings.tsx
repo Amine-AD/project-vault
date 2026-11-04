@@ -137,16 +137,11 @@ function ChangePasswordForm() {
     onSubmit: async ({ value, formApi }) => {
       setServerError(null)
       try {
-        const { newRecoveryKit } = await updateMasterPassword(
-          value.currentPassword,
-          value.newPassword,
-        )
+        await updateMasterPassword(value.currentPassword, value.newPassword)
         formApi.reset()
         toast.success({
           title: 'Master password updated',
-          description: newRecoveryKit
-            ? 'Your vault moved to a new encryption key. Save your new recovery kit.'
-            : 'Your recovery key and trusted devices keep working.',
+          description: 'Your recovery key and trusted devices keep working.',
         })
       } catch (error) {
         setServerError(

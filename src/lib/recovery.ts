@@ -7,7 +7,7 @@ import { bufferToHex, unwrapKeyBytes, wrapKeyBytes } from './crypto'
  * base32, so 0/O and 1/I/L can't be confused). HKDF splits it into:
  *  - an AES-GCM key that wraps the vault key; the wrapped copy is stored on
  *    the server, useless without the recovery key;
- *  - an auth token the server bcrypt-hashes, proving the caller holds the
+ *  - an auth token the server hashes (scrypt), proving the caller holds the
  *    key before it hands over the wrapped vault key or allows a reset.
  *
  * The server never sees the recovery key or the vault key. If both the
@@ -105,7 +105,7 @@ async function deriveRecoveryKeys(keyBytes: Uint8Array) {
 
 /** What the server stores for a recovery kit. */
 export interface RecoveryMaterial {
-  /** Proves the caller holds the recovery key (bcrypt-hashed server side). */
+  /** Proves the caller holds the recovery key (hashed again server side). */
   authKey: string
   /** The vault key, encrypted with the recovery key. */
   wrappedKey: string

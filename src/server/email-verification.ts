@@ -2,7 +2,8 @@ import crypto from 'node:crypto'
 import { and, desc, eq, gt, isNull, lt } from 'drizzle-orm'
 import { db } from '../db'
 import { emailVerifications } from '../db/schema'
-import { clientIp, takeQuota } from './rate-limit'
+import { takeQuota } from './rate-limit'
+import { clientIp } from './request'
 
 /**
  * Email ownership checks for sign-up and recovery.

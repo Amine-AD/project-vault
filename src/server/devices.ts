@@ -3,7 +3,12 @@ import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db'
 import { trustedDevices } from '../db/schema'
 import { requireSessionUser, verifySecret } from './guards'
-import { type DeviceInput, deviceId, saveDevice } from './recovery-store'
+import {
+  type DeviceInput,
+  deviceId,
+  prepareDevice,
+  saveDevice,
+} from './recovery-store'
 import { INVALID_REQUEST } from './validation'
 
 /** The signed-in user's trusted devices, most recently used first. */
@@ -52,13 +57,13 @@ export const trustThisDevice = createServerFn({ method: 'POST' })
     if (!deviceId(data.device)) {
       return { success: false, error: INVALID_REQUEST }
     }
-    const check = verifySecret(user.email, data.authKey, user.authHash)
+    const check = await verifySecret(user.email, data.authKey, user.authHash)
     if (!check.ok) {
       return {
         success: false,
         error: check.error ?? 'Master password is incorrect.',
       }
     }
-    saveDevice(db, user.id, data.device)
+    saveDevice(db, user.id, await prepareDevice(data.device))
     return { success: true }
   })

@@ -1,14 +1,9 @@
+import crypto from 'node:crypto'
 import { getCookie } from '@tanstack/react-start/server'
-import bcrypt from 'bcryptjs'
 import { eq } from 'drizzle-orm'
 import { db } from '../db'
 import { sessions, type User, users } from '../db/schema'
-import {
-  assertNotLimited,
-  recordFailure,
-  recordSuccess,
-  TooManyAttemptsError,
-} from './rate-limit'
+import { beginAttempt, TooManyAttemptsError } from './rate-limit'
 
 /**
  * Server-only helpers shared by the server function modules: who is signed
@@ -26,7 +21,11 @@ export function sessionUser(): User | null {
     .from(sessions)
     .where(eq(sessions.token, token))
     .get()
-  if (!session || session.expiresAt < Date.now()) return null
+  if (!session) return null
+  if (session.expiresAt < Date.now()) {
+    db.delete(sessions).where(eq(sessions.id, session.id)).run()
+    return null
+  }
   return (
     db.select().from(users).where(eq(users.id, session.userId)).get() ?? null
   )
@@ -38,15 +37,70 @@ export function requireSessionUser(): User {
   return user
 }
 
-/** The lockout message if the account or caller is locked out, else null. */
-export function lockoutError(account: string): string | null {
-  try {
-    assertNotLimited(account)
-    return null
-  } catch (err) {
-    if (err instanceof TooManyAttemptsError) return err.message
-    throw err
+/**
+ * Stored secrets (auth keys, recovery auth keys, device proof tokens) are
+ * hashed with scrypt. They're already high-entropy keys derived in the
+ * browser; the slow, salted hash means a leaked database can't be used to
+ * sign in, and adds cost to guessing the master password from it.
+ *
+ * scrypt runs on Node's worker thread pool, so a check doesn't stop the
+ * server from answering other requests.
+ * Format: scrypt$N$r$p$salt$hash (base64), so the cost can be raised later
+ * without breaking existing hashes. N = 2^15 takes about 70 ms and 32 MiB.
+ */
+const SCRYPT = { N: 2 ** 15, r: 8, p: 1 }
+const SCRYPT_KEY_BYTES = 32
+
+function scrypt(
+  secret: string,
+  salt: Buffer,
+  params: { N: number; r: number; p: number },
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(
+      secret,
+      salt,
+      SCRYPT_KEY_BYTES,
+      { ...params, maxmem: 256 * params.N * params.r },
+      (err, key) => (err ? reject(err) : resolve(key)),
+    )
+  })
+}
+
+/** Hashes a secret for storage. */
+export async function hashSecret(secret: string): Promise<string> {
+  const salt = crypto.randomBytes(16)
+  const key = await scrypt(secret, salt, SCRYPT)
+  return [
+    'scrypt',
+    SCRYPT.N,
+    SCRYPT.r,
+    SCRYPT.p,
+    salt.toString('base64'),
+    key.toString('base64'),
+  ].join('$')
+}
+
+/** True if `secret` matches a hash made by hashSecret. */
+async function matchesHash(secret: string, stored: string): Promise<boolean> {
+  const [scheme, n, r, p, salt, key] = stored.split('$')
+  const params = { N: Number(n), r: Number(r), p: Number(p) }
+  if (
+    scheme !== 'scrypt' ||
+    !Number.isInteger(params.N) ||
+    !Number.isInteger(params.r) ||
+    !Number.isInteger(params.p) ||
+    !salt ||
+    !key
+  ) {
+    return false
   }
+  const expected = Buffer.from(key, 'base64')
+  const actual = await scrypt(secret, Buffer.from(salt, 'base64'), params)
+  return (
+    actual.length === expected.length &&
+    crypto.timingSafeEqual(actual, expected)
+  )
 }
 
 /**
@@ -54,32 +108,39 @@ export function lockoutError(account: string): string | null {
  * kit), so a miss takes as long as a wrong guess and response times don't
  * reveal which accounts exist.
  */
-let dummyHash: string | null = null
+let dummyHash: Promise<string> | null = null
 function standInHash() {
-  dummyHash ??= bcrypt.hashSync('onevault-no-such-secret', 10)
+  dummyHash ??= hashSecret('onevault-no-such-secret')
   return dummyHash
 }
 
 /**
- * Checks a secret against its bcrypt hash with lockout accounting. Each kind
+ * Checks a secret against its stored hash with lockout accounting. Each kind
  * of secret uses its own `account` key (e.g. "recover:<email>"), so failures
  * of one don't lock out another.
  */
-export function verifySecret(
+export async function verifySecret(
   account: string,
   secret: string,
   hash: string | null | undefined,
-): { ok: true } | { ok: false; error: string | null } {
-  const locked = lockoutError(account)
-  if (locked) return { ok: false, error: locked }
-  const matches = bcrypt.compareSync(
-    String(secret ?? ''),
-    hash || standInHash(),
-  )
-  if (!hash || !matches) {
-    recordFailure(account)
-    return { ok: false, error: null }
+): Promise<{ ok: true } | { ok: false; error: string | null }> {
+  let finish: (succeeded: boolean) => void
+  try {
+    finish = beginAttempt(account)
+  } catch (err) {
+    if (err instanceof TooManyAttemptsError) {
+      return { ok: false, error: err.message }
+    }
+    throw err
   }
-  recordSuccess(account)
-  return { ok: true }
+  let matches = false
+  try {
+    matches = await matchesHash(
+      String(secret ?? ''),
+      hash || (await standInHash()),
+    )
+  } finally {
+    finish(!!hash && matches)
+  }
+  return hash && matches ? { ok: true } : { ok: false, error: null }
 }

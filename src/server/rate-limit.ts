@@ -1,4 +1,4 @@
-import { getRequestIP } from '@tanstack/react-start/server'
+import { clientIp } from './request'
 
 /**
  * In-memory limiter for failed master-password attempts.
@@ -29,14 +29,6 @@ function currentBucket(key: string, now: number): Bucket | undefined {
   return bucket
 }
 
-export function clientIp(): string {
-  try {
-    return getRequestIP({ xForwardedFor: true }) ?? 'unknown'
-  } catch {
-    return 'unknown'
-  }
-}
-
 function keysFor(account: string) {
   return [
     {
@@ -57,23 +49,53 @@ export class TooManyAttemptsError extends Error {
   }
 }
 
-/** Throws TooManyAttemptsError if the account or caller is locked out. */
-export function assertNotLimited(account: string) {
+/**
+ * Checks still running, per key. They count toward the limit, so firing many
+ * guesses at once can't get more than the limit through before the first
+ * failures are recorded (each check takes a while: the hash is slow on purpose).
+ */
+const inFlight = new Map<string, number>()
+
+/**
+ * Starts a secret check for `account` from this caller. Throws
+ * TooManyAttemptsError if the account or caller is locked out, counting
+ * checks still in progress. Call the returned function exactly once with
+ * the result: a failure is recorded against the account and the caller, a
+ * success clears the account's counter (not the caller's).
+ */
+export function beginAttempt(account: string): (succeeded: boolean) => void {
   const now = Date.now()
-  for (const { key, max } of keysFor(account)) {
+  const keys = keysFor(account)
+  for (const { key, max } of keys) {
     const bucket = currentBucket(key, now)
-    if (bucket && bucket.failures >= max) {
-      throw new TooManyAttemptsError(bucket.windowStart + WINDOW_MS - now)
+    const used = (bucket?.failures ?? 0) + (inFlight.get(key) ?? 0)
+    if (used >= max) {
+      throw new TooManyAttemptsError(
+        bucket ? bucket.windowStart + WINDOW_MS - now : 60_000,
+      )
     }
   }
-}
+  for (const { key } of keys) inFlight.set(key, (inFlight.get(key) ?? 0) + 1)
 
-export function recordFailure(account: string) {
-  const now = Date.now()
-  for (const { key } of keysFor(account)) {
-    const bucket = currentBucket(key, now)
-    if (bucket) bucket.failures += 1
-    else buckets.set(key, { failures: 1, windowStart: now })
+  let finished = false
+  return (succeeded) => {
+    if (finished) return
+    finished = true
+    const at = Date.now()
+    for (const { key } of keys) {
+      const left = (inFlight.get(key) ?? 1) - 1
+      if (left > 0) inFlight.set(key, left)
+      else inFlight.delete(key)
+    }
+    if (succeeded) {
+      buckets.delete(keys[0].key)
+      return
+    }
+    for (const { key } of keys) {
+      const bucket = currentBucket(key, at)
+      if (bucket) bucket.failures += 1
+      else buckets.set(key, { failures: 1, windowStart: at })
+    }
   }
 }
 

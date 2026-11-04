@@ -13,7 +13,7 @@ days, and credit in the fix's release notes if you'd like.
 - **Your master password never leaves the browser.** It goes through
   Argon2id (64 MiB, 3 passes, 4 lanes) in the browser. Half of the result is
   the *master key*; the other half, hashed, is the *auth key* that signs you
-  in. The server bcrypt-hashes the auth key again and can't turn it back into
+  in. The server hashes the auth key again (scrypt) and can't turn it back into
   the master key.
 - **Items are encrypted with a random vault key** (AES-256-GCM), made in the
   browser when the vault is created. The server stores three wrapped copies
@@ -30,8 +30,9 @@ days, and credit in the fix's release notes if you'd like.
   the stand-in salts that hide which emails have a vault, are keyed with a
   per-install secret (`APP_SECRET`, or one generated into the database on
   first run).
-- Vaults made with older versions (PBKDF2, or no random vault key) are
-  upgraded automatically the next time they're unlocked.
+- If the key derivation defaults are raised in a future version, existing
+  vaults are re-wrapped under the new settings the next time they're
+  unlocked.
 
 ## What a web vault can't protect against: the server's JavaScript
 

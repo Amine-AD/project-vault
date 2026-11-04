@@ -5,8 +5,7 @@ import {
   getCookie,
   setCookie,
 } from '@tanstack/react-start/server'
-import bcrypt from 'bcryptjs'
-import { and, eq } from 'drizzle-orm'
+import { eq, lt } from 'drizzle-orm'
 import { db } from '../db'
 import {
   emailVerifications,
@@ -35,12 +34,12 @@ import {
   verifyCode,
 } from './email-verification'
 import {
+  hashSecret,
   requireSessionUser,
   SESSION_COOKIE_NAME,
   sessionUser,
   verifySecret,
 } from './guards'
-import { NEUTRAL_METADATA, toClientRow } from './item-rows'
 import { recordSuccess } from './rate-limit'
 import {
   checkDeviceProof,
@@ -49,8 +48,10 @@ import {
   deleteDevices,
   deviceId,
   lockAwayVault,
+  prepareDevice,
   saveDevice,
 } from './recovery-store'
+import { isHttps } from './request'
 import { keyedHash } from './secrets'
 import {
   INVALID_REQUEST,
@@ -59,10 +60,8 @@ import {
   kdfColumns,
   kdfFromRow,
   type PasswordKeysInput,
-  parseItemList,
   parsePasswordKeys,
   type RecoveryInput,
-  type ReEncryptedItem,
 } from './validation'
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
@@ -70,8 +69,6 @@ const INVALID_CREDENTIALS = 'Invalid email or master password.'
 const INVALID_RECOVERY = "That recovery key doesn't match this email."
 const UNTRUSTED_DEVICE =
   'This browser isn’t a trusted device for this vault anymore. Use your recovery key instead.'
-const VAULT_CHANGED =
-  'Your vault changed while this was in progress. Nothing was saved; try again.'
 
 /** How a forgotten-password recovery proves it can open the vault. */
 type RecoveryProof =
@@ -84,15 +81,6 @@ type RecoveryProof =
  */
 type PasswordKeys = PasswordKeysInput
 
-/**
- * A new vault key for a vault that had none (made before the random vault
- * key): every item re-encrypted with it, and a recovery kit that wraps it.
- */
-interface KeyRotation {
-  items: ReEncryptedItem[]
-  recovery: RecoveryInput
-}
-
 function normalizeEmail(email: string) {
   return String(email ?? '')
     .toLowerCase()
@@ -103,95 +91,59 @@ function isValidEmail(email: string) {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
 
-/** Columns for a new recovery kit, or for clearing it (null). */
-function recoveryColumns(recovery: RecoveryInput | null | undefined) {
-  return recovery
-    ? {
-        recoveryAuthHash: bcrypt.hashSync(recovery.authKey, 10),
-        recoveryWrappedKey: recovery.wrappedKey,
-        recoveryCreatedAt: Date.now(),
-      }
-    : {
-        recoveryAuthHash: null,
-        recoveryWrappedKey: null,
-        recoveryCreatedAt: null,
-      }
+/** Users columns for a new recovery kit. */
+async function recoveryColumns(recovery: RecoveryInput) {
+  return {
+    recoveryAuthHash: await hashSecret(recovery.authKey),
+    recoveryWrappedKey: recovery.wrappedKey,
+    recoveryCreatedAt: Date.now(),
+  }
 }
 
 /** Users columns for a new master password. */
-function passwordColumns(keys: PasswordKeys) {
+async function passwordColumns(keys: PasswordKeys) {
   return {
     salt: keys.salt,
     ...kdfColumns(keys.kdf),
     // The client-derived authKey is hashed again before storage
-    authHash: bcrypt.hashSync(keys.authKey, 10),
+    authHash: await hashSecret(keys.authKey),
     encryptedVaultKey: keys.encryptedVaultKey,
     updatedAt: Date.now(),
   }
 }
 
-/** Creates a session row and sets the HttpOnly cookie. */
+/**
+ * Creates a session row and sets the HttpOnly cookie. Replaces the session
+ * this browser already had (unlocking signs in again, so it would otherwise
+ * leave one more valid session behind every time), and clears out expired
+ * sessions while at it.
+ */
 function startSession(userId: string) {
   const now = Date.now()
   const token = crypto.randomBytes(32).toString('hex')
-  db.insert(sessions)
-    .values({
-      id: crypto.randomUUID(),
-      userId,
-      token,
-      expiresAt: now + SESSION_DURATION_MS,
-      createdAt: now,
-    })
-    .run()
+  const previous = getCookie(SESSION_COOKIE_NAME)
+  db.transaction((tx) => {
+    if (previous) tx.delete(sessions).where(eq(sessions.token, previous)).run()
+    tx.delete(sessions).where(lt(sessions.expiresAt, now)).run()
+    tx.insert(sessions)
+      .values({
+        id: crypto.randomUUID(),
+        userId,
+        token,
+        expiresAt: now + SESSION_DURATION_MS,
+        createdAt: now,
+      })
+      .run()
+  })
   setCookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
+    // Never sent over plain HTTP once the app is served over HTTPS. Left
+    // off on plain HTTP so a self-hosted server on a home network still works.
+    secure: isHttps(),
     sameSite: 'lax',
     path: '/',
     maxAge: Math.floor(SESSION_DURATION_MS / 1000),
   })
-}
-
-/**
- * Validates a key rotation: well-formed, with exactly one new ciphertext for
- * every item the user has (one left out would become unreadable).
- */
-function parseRotation(
-  userId: string,
-  value: unknown,
-): { ok: true; rotation: KeyRotation } | { ok: false; error: string } {
-  const r = (value ?? {}) as Record<string, unknown>
-  const items = parseItemList(r.items)
-  if (!items || !isRecoveryInput(r.recovery)) {
-    return { ok: false, error: INVALID_REQUEST }
-  }
-  const current = db
-    .select({ id: vaultItems.id })
-    .from(vaultItems)
-    .where(eq(vaultItems.userId, userId))
-    .all()
-  const sent = new Set(items.map((i) => i.id))
-  if (
-    sent.size !== items.length ||
-    sent.size !== current.length ||
-    current.some((row) => !sent.has(row.id))
-  ) {
-    return { ok: false, error: VAULT_CHANGED }
-  }
-  return { ok: true, rotation: { items, recovery: r.recovery } }
-}
-
-/** Replaces every item's ciphertext and neutralizes its plaintext metadata. */
-function writeReEncryptedItems(
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
-  userId: string,
-  items: ReEncryptedItem[],
-) {
-  for (const item of items) {
-    tx.update(vaultItems)
-      .set({ ...NEUTRAL_METADATA, encryptedData: item.encryptedData })
-      .where(and(eq(vaultItems.id, item.id), eq(vaultItems.userId, userId)))
-      .run()
-  }
 }
 
 /**
@@ -343,18 +295,17 @@ export const registerUser = createServerFn({ method: 'POST' })
 
     const userId = crypto.randomUUID()
     const now = Date.now()
+    const columns = {
+      ...(await passwordColumns(keys)),
+      ...(await recoveryColumns(data.recovery)),
+    }
+    const device = await prepareDevice(data.device)
 
     db.transaction((tx) => {
       tx.insert(users)
-        .values({
-          id: userId,
-          email,
-          ...passwordColumns(keys),
-          ...recoveryColumns(data.recovery),
-          createdAt: now,
-        })
+        .values({ id: userId, email, ...columns, createdAt: now })
         .run()
-      saveDevice(tx, userId, data.device)
+      saveDevice(tx, userId, device)
       consumeTicket(verification.id, tx)
     })
 
@@ -365,8 +316,8 @@ export const registerUser = createServerFn({ method: 'POST' })
 
 /**
  * Sign in by comparing the client-derived authKey. Also used to unlock an
- * already signed-in vault. Returns the wrapped vault key (null for vaults
- * made before it existed), which only the master key can open.
+ * already signed-in vault. Returns the wrapped vault key, which only the
+ * master key can open.
  */
 export const loginUser = createServerFn({ method: 'POST' })
   .validator((data: { email: string; authKey: string }) => data)
@@ -374,7 +325,7 @@ export const loginUser = createServerFn({ method: 'POST' })
     const email = normalizeEmail(data.email)
     const user = db.select().from(users).where(eq(users.email, email)).get()
 
-    const check = verifySecret(email, data.authKey, user?.authHash)
+    const check = await verifySecret(email, data.authKey, user?.authHash)
     if (!check.ok || !user) {
       return {
         success: false as const,
@@ -443,28 +394,22 @@ export const getKeyMaterial = createServerFn({ method: 'GET' }).handler(
  * Only the wrapped vault key changes: the items, recovery kit and trusted
  * devices all use the vault key itself and keep working.
  *
- * A vault made before the random vault key also sends `rotation`: a new
- * vault key, every item re-encrypted with it and a new recovery kit. Other
- * trusted devices hold the old key, so they're dropped and trusted again the
- * next time they unlock; this browser stays trusted with the new key.
- *
- * `reason: 'upgrade'` is the automatic upgrade on unlock (same password), so
- * no "password changed" email is sent.
+ * `reason: 'upgrade'` is the automatic re-wrap on unlock when the KDF
+ * defaults have been raised (same password), so no "password changed" email
+ * is sent.
  */
 export const changeMasterPassword = createServerFn({ method: 'POST' })
   .validator(
     (data: {
       oldAuthKey: string
       keys: PasswordKeys
-      rotation?: KeyRotation
-      device?: DeviceInput
       reason?: 'password' | 'upgrade'
     }) => data,
   )
   .handler(async ({ data }) => {
     const user = requireSessionUser()
 
-    const check = verifySecret(user.email, data.oldAuthKey, user.authHash)
+    const check = await verifySecret(user.email, data.oldAuthKey, user.authHash)
     if (!check.ok) {
       return {
         success: false,
@@ -475,27 +420,10 @@ export const changeMasterPassword = createServerFn({ method: 'POST' })
     const keys = parsePasswordKeys(data.keys)
     if (!keys) return { success: false, error: INVALID_REQUEST }
 
-    let rotation: KeyRotation | null = null
-    if (data.rotation || !user.encryptedVaultKey) {
-      const parsed = parseRotation(user.id, data.rotation)
-      if (!parsed.ok) return { success: false, error: parsed.error }
-      rotation = parsed.rotation
-    }
-
-    db.transaction((tx) => {
-      tx.update(users)
-        .set({
-          ...passwordColumns(keys),
-          ...(rotation ? recoveryColumns(rotation.recovery) : {}),
-        })
-        .where(eq(users.id, user.id))
-        .run()
-      if (rotation) {
-        writeReEncryptedItems(tx, user.id, rotation.items)
-        deleteDevices(tx, user.id, deviceId(data.device))
-        saveDevice(tx, user.id, data.device)
-      }
-    })
+    db.update(users)
+      .set(await passwordColumns(keys))
+      .where(eq(users.id, user.id))
+      .run()
 
     if (data.reason !== 'upgrade') {
       void sendSecurityAlert(user.email, 'changed')
@@ -527,7 +455,7 @@ export const setRecoveryKit = createServerFn({ method: 'POST' })
       return { success: false, error: INVALID_REQUEST }
     }
 
-    const check = verifySecret(user.email, data.authKey, user.authHash)
+    const check = await verifySecret(user.email, data.authKey, user.authHash)
     if (!check.ok) {
       return {
         success: false,
@@ -535,7 +463,7 @@ export const setRecoveryKit = createServerFn({ method: 'POST' })
       }
     }
 
-    const columns = recoveryColumns(data.recovery)
+    const columns = await recoveryColumns(data.recovery)
     db.update(users).set(columns).where(eq(users.id, user.id)).run()
 
     return { success: true, createdAt: columns.recoveryCreatedAt }
@@ -549,13 +477,13 @@ function findUser(email: string) {
  * Checks a recovery proof (recovery key or trusted device) and returns the
  * vault key wrapped for it.
  */
-function checkRecoveryProof(
+async function checkRecoveryProof(
   email: string,
   user: ReturnType<typeof findUser>,
   proof: RecoveryProof,
-): { ok: true; wrappedKey: string } | { ok: false; error: string } {
+): Promise<{ ok: true; wrappedKey: string } | { ok: false; error: string }> {
   if (proof?.kind === 'device') {
-    const check = checkDeviceProof(email, user, proof)
+    const check = await checkDeviceProof(email, user, proof)
     return check.ok
       ? check
       : { ok: false, error: check.error ?? UNTRUSTED_DEVICE }
@@ -563,7 +491,7 @@ function checkRecoveryProof(
   if (proof?.kind !== 'recoveryKey' || !isAuthKey(proof.authKey)) {
     return { ok: false, error: 'Invalid request.' }
   }
-  const check = verifySecret(
+  const check = await verifySecret(
     `recover:${email}`,
     proof.authKey,
     user?.recoveryAuthHash,
@@ -578,8 +506,7 @@ function checkRecoveryProof(
  * Recovery step 1: with a verified recovery email ticket, prove possession
  * of the recovery key or a trusted device, and receive the wrapped vault
  * key. Both are needed: a found recovery kit or a stolen laptop alone isn't
- * enough. A vault made before the random vault key also gets its encrypted
- * items, so the browser can re-encrypt them under a new vault key.
+ * enough.
  */
 export const startRecovery = createServerFn({ method: 'POST' })
   .validator(
@@ -592,7 +519,7 @@ export const startRecovery = createServerFn({ method: 'POST' })
     }
     const user = findUser(email)
 
-    const check = checkRecoveryProof(email, user, data.proof)
+    const check = await checkRecoveryProof(email, user, data.proof)
     if (!check.ok || !user) {
       return {
         success: false as const,
@@ -600,29 +527,13 @@ export const startRecovery = createServerFn({ method: 'POST' })
       }
     }
 
-    const needsRotation = !user.encryptedVaultKey
-    const items = needsRotation
-      ? db
-          .select()
-          .from(vaultItems)
-          .where(eq(vaultItems.userId, user.id))
-          .all()
-          .map(toClientRow)
-      : []
-
-    return {
-      success: true as const,
-      wrappedKey: check.wrappedKey,
-      needsRotation,
-      items,
-    }
+    return { success: true as const, wrappedKey: check.wrappedKey }
   })
 
 /**
  * Recovery step 2: set the new master password (wrapping the same vault
  * key) and a fresh recovery kit, sign out every other session, drop other
- * trusted devices and sign in. A vault made before the random vault key
- * also sends its items re-encrypted with a new vault key.
+ * trusted devices and sign in.
  */
 export const completeRecovery = createServerFn({ method: 'POST' })
   .validator(
@@ -632,7 +543,6 @@ export const completeRecovery = createServerFn({ method: 'POST' })
       proof: RecoveryProof
       keys: PasswordKeys
       newRecovery: RecoveryInput
-      reEncryptedItems?: ReEncryptedItem[]
       device?: DeviceInput
     }) => data,
   )
@@ -652,7 +562,7 @@ export const completeRecovery = createServerFn({ method: 'POST' })
     }
     const user = findUser(email)
 
-    const check = checkRecoveryProof(email, user, data.proof)
+    const check = await checkRecoveryProof(email, user, data.proof)
     if (!check.ok || !user) {
       return {
         success: false as const,
@@ -660,29 +570,18 @@ export const completeRecovery = createServerFn({ method: 'POST' })
       }
     }
 
-    let reEncrypted: ReEncryptedItem[] = []
-    if (!user.encryptedVaultKey || data.reEncryptedItems) {
-      const parsed = parseRotation(user.id, {
-        items: data.reEncryptedItems,
-        recovery: data.newRecovery,
-      })
-      if (!parsed.ok) return { success: false as const, error: parsed.error }
-      reEncrypted = parsed.rotation.items
+    const columns = {
+      ...(await passwordColumns(keys)),
+      ...(await recoveryColumns(data.newRecovery)),
     }
+    const device = await prepareDevice(data.device)
 
     db.transaction((tx) => {
-      tx.update(users)
-        .set({
-          ...passwordColumns(keys),
-          ...recoveryColumns(data.newRecovery),
-        })
-        .where(eq(users.id, user.id))
-        .run()
-      writeReEncryptedItems(tx, user.id, reEncrypted)
+      tx.update(users).set(columns).where(eq(users.id, user.id)).run()
       // Whoever was signed in with the forgotten password is signed out
       tx.delete(sessions).where(eq(sessions.userId, user.id)).run()
       deleteDevices(tx, user.id, deviceId(data.device))
-      saveDevice(tx, user.id, data.device)
+      saveDevice(tx, user.id, device)
       consumeTicket(verification.id, tx)
     })
 
@@ -729,18 +628,18 @@ export const resetAccount = createServerFn({ method: 'POST' })
       return { success: false as const, error: TICKET_EXPIRED }
     }
 
+    const columns = {
+      ...(await passwordColumns(keys)),
+      ...(await recoveryColumns(data.recovery)),
+    }
+    const device = await prepareDevice(data.device)
+
     let lockedItemCount = 0
     db.transaction((tx) => {
       lockedItemCount = lockAwayVault(tx, user)
       tx.delete(sessions).where(eq(sessions.userId, user.id)).run()
-      tx.update(users)
-        .set({
-          ...passwordColumns(keys),
-          ...recoveryColumns(data.recovery),
-        })
-        .where(eq(users.id, user.id))
-        .run()
-      saveDevice(tx, user.id, data.device)
+      tx.update(users).set(columns).where(eq(users.id, user.id)).run()
+      saveDevice(tx, user.id, device)
       consumeTicket(verification.id, tx)
     })
 
@@ -767,7 +666,7 @@ export const deleteAccount = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const user = requireSessionUser()
 
-    const check = verifySecret(user.email, data.authKey, user.authHash)
+    const check = await verifySecret(user.email, data.authKey, user.authHash)
     if (!check.ok) {
       return {
         success: false as const,

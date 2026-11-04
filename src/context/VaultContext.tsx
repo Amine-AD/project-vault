@@ -55,6 +55,7 @@ import {
 } from '../server/devices'
 import type { ClientVaultRow } from '../server/item-rows'
 import {
+  deleteLockedVault as deleteLockedVaultOnServer,
   openLockedVault,
   restoreLockedVault as restoreLockedVaultOnServer,
 } from '../server/locked-vaults'
@@ -63,7 +64,6 @@ import {
   deleteAllVaultItems,
   deleteVaultItem,
   getEncryptedVaultItems,
-  rewrapVaultItems,
   saveVaultItem,
 } from '../server/vault'
 import type {
@@ -127,12 +127,9 @@ interface VaultContextType {
   exportDecryptedJSON: () => string
   refreshItems: () => Promise<void>
   copySecureText: (text: string) => Promise<void>
-  /** Resolves to whether a new recovery kit was issued (see pendingRecoveryKey). */
-  updateMasterPassword: (
-    currentPass: string,
-    newPass: string,
-  ) => Promise<{ newRecoveryKit: boolean }>
-  eraseAllItems: () => Promise<void>
+  updateMasterPassword: (currentPass: string, newPass: string) => Promise<void>
+  /** Deletes every item. Needs the master password. */
+  eraseAllItems: (masterPass: string) => Promise<void>
   // Recovery kit
   /** When the kit was made; null if there is none, undefined while loading. */
   recoveryCreatedAt: number | null | undefined
@@ -166,6 +163,8 @@ interface VaultContextType {
     vault: LockedVaultInfo,
     method: LockedVaultMethod,
   ) => Promise<number>
+  /** Deletes a locked vault for good. Needs the current master password. */
+  deleteLockedVault: (vaultId: string, masterPass: string) => Promise<void>
   /** Trusts this browser for recovery again (after turning it off). */
   trustThisDevice: (masterPass: string) => Promise<void>
   /**
@@ -285,10 +284,9 @@ function toEncryptedPayload(
 }
 
 /**
- * Decrypts server rows. Rows written before metadata was encrypted fall back
- * to the legacy plaintext columns and are returned in `legacy` so they can
- * be re-encrypted. With `strict`, any row that fails to decrypt throws
- * (used where skipping one would lose it, like recovery).
+ * Decrypts server rows. With `strict`, any row that fails to decrypt throws
+ * (used where skipping one would lose it, like restoring locked items);
+ * otherwise it's skipped and counted in `failed`.
  */
 async function decryptRows(
   rows: ClientVaultRow[],
@@ -296,7 +294,7 @@ async function decryptRows(
   { strict = false } = {},
 ) {
   const items: DecryptedItem[] = []
-  const legacy: DecryptedItem[] = []
+  let failed = 0
 
   for (const row of rows) {
     try {
@@ -304,29 +302,23 @@ async function decryptRows(
         row.encryptedData,
         key,
       )
-      const item = {
+      items.push({
         ...payload,
         id: row.id,
-        type: payload.type ?? row.legacy.type ?? 'login',
-        isFavorite: payload.isFavorite ?? row.legacy.isFavorite,
-        tags: payload.tags ?? row.legacy.tags,
+        type: payload.type ?? 'login',
+        isFavorite: payload.isFavorite ?? false,
+        tags: payload.tags ?? [],
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
-      } as DecryptedItem
-      items.push(item)
-
-      const hasPlaintextMetadata =
-        row.legacy.type !== null ||
-        row.legacy.isFavorite ||
-        row.legacy.tags.length > 0
-      if (hasPlaintextMetadata || payload.type === undefined) legacy.push(item)
+      } as DecryptedItem)
     } catch (err) {
       if (strict) throw new Error('Some items could not be decrypted.')
       console.error(`Failed to decrypt item ${row.id}`, err)
+      failed += 1
     }
   }
 
-  return { items, legacy }
+  return { items, failed }
 }
 
 /** A vault key: its raw bytes (to wrap it) and the AES key that uses them. */
@@ -359,20 +351,6 @@ async function passwordKeys(masterPass: string, rawVaultKey: Uint8Array) {
   }
 }
 
-/**
- * The vault key bytes from a derived master key. Vaults made before the
- * random vault key have no wrapped key: the master key is the vault key.
- * Throws if the master key doesn't open the wrapped key.
- */
-function openVaultKey(
-  encryptedVaultKey: string | null,
-  derived: { masterKey: CryptoKey; rawMasterKey: Uint8Array },
-): Promise<Uint8Array> {
-  return encryptedVaultKey
-    ? unwrapKeyBytes(encryptedVaultKey, derived.masterKey)
-    : Promise.resolve(derived.rawMasterKey)
-}
-
 /** Encrypts decrypted items with a vault key, for a bulk update. */
 function encryptItems(items: DecryptedItem[], key: CryptoKey) {
   return Promise.all(
@@ -389,7 +367,8 @@ function encryptItems(items: DecryptedItem[], key: CryptoKey) {
 /**
  * Re-checks the master password of the signed-in account in the browser and
  * opens the vault key with it. Used where the vault key has to be wrapped
- * again (new recovery kit, trusting this browser, new password).
+ * again (new recovery kit, trusting this browser, new password) or the
+ * password must be confirmed (erasing data).
  */
 async function unlockWithPassword(
   masterPass: string,
@@ -399,11 +378,11 @@ async function unlockWithPassword(
   const derived = await deriveMasterKey(masterPass, material.salt, material.kdf)
   let raw: Uint8Array
   try {
-    raw = await openVaultKey(material.encryptedVaultKey, derived)
+    raw = await unwrapKeyBytes(material.encryptedVaultKey, derived.masterKey)
   } catch {
     throw new Error(wrongMessage)
   }
-  return { authKey: derived.authKey, raw, legacy: !material.encryptedVaultKey }
+  return { authKey: derived.authKey, raw }
 }
 
 /** Checks the master password with the server and opens the vault key. */
@@ -414,91 +393,37 @@ async function signIn(email: string, masterPass: string) {
   if (!result.success) {
     throw new Error(result.error || 'Invalid email or master password.')
   }
-  const raw = await openVaultKey(result.encryptedVaultKey, derived)
+  const raw = await unwrapKeyBytes(result.encryptedVaultKey, derived.masterKey)
   return {
     user: result.user,
     authKey: derived.authKey,
     kdf: prelogin.kdf as KdfParams,
-    legacy: !result.encryptedVaultKey,
     opened: await openKey(raw),
   }
 }
 
 /**
- * Brings a vault up to date right after the master password was checked:
- * - made before the random vault key: gets one, every item is re-encrypted
- *   with it and a new recovery kit is issued (the old kit wraps the old key);
- * - older KDF settings (PBKDF2, or weaker Argon2id): the vault key is
- *   wrapped again under the current settings, nothing else changes.
- * Never blocks unlocking: on any error the vault stays as it was.
+ * If the vault's KDF settings are weaker than the current defaults (they're
+ * raised in a later version), wraps the vault key again under the current
+ * ones, right after the master password was checked. Nothing else changes.
+ * Never blocks unlocking: on any error the vault stays as it was. Resolves
+ * to the auth key now valid for the password.
  */
-async function upgradeIfNeeded({
-  email,
-  masterPass,
-  session,
-  enroll,
-}: {
-  email: string
-  masterPass: string
-  session: Awaited<ReturnType<typeof signIn>>
-  enroll: Enroll
-}): Promise<{
-  opened: OpenedKey
-  authKey: string
-  recoveryKey: string | null
-  enrolled: boolean
-}> {
-  const unchanged = {
-    opened: session.opened,
-    authKey: session.authKey,
-    recoveryKey: null,
-    enrolled: false,
-  }
-  if (!session.legacy && !isOutdatedKdf(session.kdf)) return unchanged
-
+async function upgradeKdfIfNeeded(
+  masterPass: string,
+  session: Awaited<ReturnType<typeof signIn>>,
+): Promise<string> {
+  if (!isOutdatedKdf(session.kdf)) return session.authKey
   try {
-    if (!session.legacy) {
-      const keys = await passwordKeys(masterPass, session.opened.raw)
-      const res = await changeMasterPassword({
-        data: { oldAuthKey: session.authKey, keys, reason: 'upgrade' },
-      })
-      if (!res.success) throw new Error(res.error)
-      return { ...unchanged, authKey: keys.authKey }
-    }
-
-    const rows = await getEncryptedVaultItems()
-    const { items } = await decryptRows(rows, session.opened.key, {
-      strict: true,
-    })
-    const next = await openKey(generateVaultKeyBytes())
-    const keys = await passwordKeys(masterPass, next.raw)
-    const kit = await createRecoveryKitMaterial(next.raw)
-    const device = await enroll(next.raw)
+    const keys = await passwordKeys(masterPass, session.opened.raw)
     const res = await changeMasterPassword({
-      data: {
-        oldAuthKey: session.authKey,
-        keys,
-        rotation: {
-          items: await encryptItems(items, next.key),
-          recovery: kit.material,
-        },
-        device: device?.enrollment,
-        reason: 'upgrade',
-      },
+      data: { oldAuthKey: session.authKey, keys, reason: 'upgrade' },
     })
-    if (!res.success) {
-      if (device?.created) await forgetThisDevice(email)
-      throw new Error(res.error)
-    }
-    return {
-      opened: next,
-      authKey: keys.authKey,
-      recoveryKey: kit.recoveryKey,
-      enrolled: true,
-    }
+    if (!res.success) throw new Error(res.error)
+    return keys.authKey
   } catch (err) {
-    console.error('[vault] Upgrade skipped; will retry on next unlock', err)
-    return unchanged
+    console.error('[vault] KDF upgrade skipped; will retry on next unlock', err)
+    return session.authKey
   }
 }
 
@@ -666,25 +591,35 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   // Fetch and decrypt items using provided key
   const fetchAndDecryptItems = useCallback(
     async (key: CryptoKey) => {
+      let rows: ClientVaultRow[]
       try {
-        const rows = await getEncryptedVaultItems()
-        const { items: decrypted, legacy } = await decryptRows(rows, key)
+        rows = await getEncryptedVaultItems()
+      } catch (err) {
+        // Without this the vault would just look empty, as if items were lost
+        console.error('Failed to load items', err)
+        toast.error({
+          title: 'Couldn’t load your items',
+          description:
+            'Nothing was deleted. Check your connection and reload the page.',
+          duration: 15_000,
+        })
+        return
+      }
+      try {
+        const { items: decrypted, failed } = await decryptRows(rows, key)
         setItems(decrypted)
-
-        if (legacy.length > 0) {
-          const rewrapped = await Promise.all(
-            legacy.map(async (item) => ({
-              id: item.id,
-              encryptedData: await encryptData(
-                toEncryptedPayload(item, item.title),
-                key,
-              ),
-            })),
-          )
-          rewrapVaultItems({ data: { items: rewrapped } }).catch((err) =>
-            console.error('Failed to migrate item metadata', err),
-          )
+        if (failed > 0) {
+          toast.warning({
+            title:
+              failed === 1
+                ? '1 item couldn’t be opened'
+                : `${failed} items couldn’t be opened`,
+            description:
+              'They’re still stored on the server, but hidden here because they can’t be decrypted. Don’t erase your vault.',
+            duration: 20_000,
+          })
         }
+
         if (decrypted.length > 0 && !selectedId) {
           setSelectedId(decrypted[0].id)
         }
@@ -702,31 +637,20 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   }, [vaultKey, fetchAndDecryptItems])
 
   // Sign in (or unlock): check the master password, open the vault key,
-  // bring the vault up to date if needed and trust this browser.
+  // bring its KDF settings up to date if needed and trust this browser.
   const openSession = async (
     email: string,
     masterPass: string,
     enroll: Enroll,
   ) => {
     const session = await signIn(email, masterPass)
-    const upgraded = await upgradeIfNeeded({
-      email,
-      masterPass,
-      session,
-      enroll,
-    })
-    if (!upgraded.enrolled) {
-      await enrollDevice(email, upgraded.authKey, upgraded.opened.raw, enroll)
-    }
+    const authKey = await upgradeKdfIfNeeded(masterPass, session)
+    await enrollDevice(email, authKey, session.opened.raw, enroll)
 
     setUser(session.user)
-    setVaultKey(upgraded.opened.key)
+    setVaultKey(session.opened.key)
     setIsUnlocked(true)
-    if (upgraded.recoveryKey) {
-      setRecoveryCreatedAt(Date.now())
-      setPendingRecoveryKey(upgraded.recoveryKey)
-    }
-    await fetchAndDecryptItems(upgraded.opened.key)
+    await fetchAndDecryptItems(session.opened.key)
   }
 
   // Login & Unlock
@@ -962,9 +886,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   }
 
   // Change the master password. Only the wrapped vault key changes, so the
-  // items, recovery kit and trusted devices keep working. A vault made
-  // before the random vault key gets one now: every item is re-encrypted in
-  // the browser and a new recovery kit is issued.
+  // items, recovery kit and trusted devices keep working.
   const updateMasterPassword = async (currentPass: string, newPass: string) => {
     if (!user || !vaultKey) throw new Error('Vault must be unlocked')
 
@@ -972,52 +894,13 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       currentPass,
       'Current master password is incorrect.',
     )
-
-    if (!current.legacy) {
-      const keys = await passwordKeys(newPass, current.raw)
-      const res = await changeMasterPassword({
-        data: { oldAuthKey: current.authKey, keys, reason: 'password' },
-      })
-      if (!res.success) {
-        throw new Error(res.error || 'Failed to update master password.')
-      }
-      return { newRecoveryKit: false }
-    }
-
-    // Items waiting on an undo toast still exist on the server and must be
-    // re-encrypted too, so finish deleting them first
-    await flushPendingDeletes()
-    const rows = await getEncryptedVaultItems()
-    const { items: currentItems } = await decryptRows(rows, vaultKey, {
-      strict: true,
-    })
-    const next = await openKey(generateVaultKeyBytes())
-    const keys = await passwordKeys(newPass, next.raw)
-    const kit = await createRecoveryKitMaterial(next.raw)
-    // Other trusted devices hold the old key; this one gets the new key
-    const device = await prepareEnrollment(user.email, next.raw)
-
+    const keys = await passwordKeys(newPass, current.raw)
     const res = await changeMasterPassword({
-      data: {
-        oldAuthKey: current.authKey,
-        keys,
-        rotation: {
-          items: await encryptItems(currentItems, next.key),
-          recovery: kit.material,
-        },
-        device: device?.enrollment,
-        reason: 'password',
-      },
+      data: { oldAuthKey: current.authKey, keys, reason: 'password' },
     })
     if (!res.success) {
-      if (device?.created) await forgetThisDevice(user.email)
       throw new Error(res.error || 'Failed to update master password.')
     }
-
-    setVaultKey(next.key)
-    setRecoveryCreatedAt(Date.now())
-    setPendingRecoveryKey(kit.recoveryKey)
-    return { newRecoveryKit: true }
   }
 
   // Recovery kit status, loaded once the vault is open
@@ -1077,19 +960,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     const start = await startRecovery({ data: { email, ticket, proof } })
     if (!start.success) throw new Error(start.error)
 
-    let opened = await openKey(await unwrap(start.wrappedKey))
-    let reEncryptedItems:
-      | Array<{ id: string; encryptedData: string }>
-      | undefined
-    if (start.needsRotation) {
-      // Made before the random vault key: move every item to a new one.
-      // Strict: skipping an item here would leave it unreadable for good.
-      const { items: recovered } = await decryptRows(start.items, opened.key, {
-        strict: true,
-      })
-      opened = await openKey(generateVaultKeyBytes())
-      reEncryptedItems = await encryptItems(recovered, opened.key)
-    }
+    const opened = await openKey(await unwrap(start.wrappedKey))
 
     const keys = await passwordKeys(newMasterPass, opened.raw)
     const kit = await createRecoveryKitMaterial(opened.raw)
@@ -1102,7 +973,6 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
         proof,
         keys,
         newRecovery: kit.material,
-        reEncryptedItems,
         device: device?.enrollment,
       },
     })
@@ -1171,7 +1041,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     if (!user || !vaultKey) throw new Error('Vault must be unlocked')
 
     let proof: Parameters<typeof openLockedVault>[0]['data']['proof']
-    let openOldKey: (wrappedKey: string | null) => Promise<Uint8Array>
+    let openOldKey: (wrappedKey: string) => Promise<Uint8Array>
     if (method.kind === 'password') {
       const derived = await deriveMasterKey(
         method.password,
@@ -1179,24 +1049,18 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
         vault.kdf,
       )
       proof = { kind: 'password', authKey: derived.authKey }
-      openOldKey = (wrappedKey) => openVaultKey(wrappedKey, derived)
+      openOldKey = (wrappedKey) => unwrapKeyBytes(wrappedKey, derived.masterKey)
     } else if (method.kind === 'recoveryKey') {
       const { keyBytes, authKey } = await readRecoveryKey(method.recoveryKey)
       proof = { kind: 'recoveryKey', authKey }
-      openOldKey = async (wrappedKey) => {
-        if (!wrappedKey) throw new Error('Invalid response.')
-        return unwrapVaultKey(wrappedKey, keyBytes)
-      }
+      openOldKey = (wrappedKey) => unwrapVaultKey(wrappedKey, keyBytes)
     } else {
       const deviceProof = await getDeviceProof(user.email)
       if (!deviceProof) {
         throw new Error('This browser wasn’t trusted for this vault.')
       }
       proof = { kind: 'device', ...deviceProof }
-      openOldKey = async (wrappedKey) => {
-        if (!wrappedKey) throw new Error('Invalid response.')
-        return unwrapWithDevice(user.email, wrappedKey)
-      }
+      openOldKey = (wrappedKey) => unwrapWithDevice(user.email, wrappedKey)
     }
 
     const opened = await openLockedVault({ data: { id: vault.id, proof } })
@@ -1215,6 +1079,16 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
 
     await fetchAndDecryptItems(vaultKey)
     return res.count
+  }
+
+  // Delete a locked vault for good. Needs the current master password.
+  const deleteLockedVault = async (vaultId: string, masterPass: string) => {
+    if (!user) throw new Error('Vault must be unlocked')
+    const { authKey } = await unlockWithPassword(masterPass)
+    const res = await deleteLockedVaultOnServer({
+      data: { id: vaultId, authKey },
+    })
+    if (!res.success) throw new Error(res.error)
   }
 
   // Trust this browser for recovery again, after it was turned off here
@@ -1262,9 +1136,14 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     setPendingRecoveryKey(null)
   }
 
-  // Erase all items for current user
-  const eraseAllItems = async () => {
-    await deleteAllVaultItems()
+  // Erase all items for current user. Needs the master password.
+  const eraseAllItems = async (masterPass: string) => {
+    const { authKey } = await unlockWithPassword(masterPass)
+    const res = await deleteAllVaultItems({ data: { authKey } })
+    if (!res.success) throw new Error(res.error)
+    // Items waiting on an undo toast are gone from the server already
+    for (const { timer } of pendingDeletes.current.values()) clearTimeout(timer)
+    pendingDeletes.current.clear()
     setItems([])
     setSelectedId(null)
     setIsEditing(false)
@@ -1359,6 +1238,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
         recoverVault,
         resetVault,
         restoreLockedVault,
+        deleteLockedVault,
         trustThisDevice,
         deleteAccount,
         handleLogin,

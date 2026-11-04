@@ -5,6 +5,10 @@
     "clientKind": "git",
     "useIgnoreFile": true
   },
+  "files": {
+    // Written by drizzle-kit; never edit or reformat them
+    "includes": ["**", "!drizzle/meta"]
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space"
