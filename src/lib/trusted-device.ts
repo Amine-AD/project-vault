@@ -1,10 +1,4 @@
-import {
-  base64ToBuffer,
-  bufferToBase64,
-  bufferToHex,
-  decryptData,
-  encryptData,
-} from './crypto'
+import { bufferToHex, unwrapKeyBytes, wrapKeyBytes } from './crypto'
 
 /**
  * Trusted device
@@ -210,10 +204,7 @@ export async function prepareEnrollment(
         id: record.deviceId,
         name: describeThisDevice(),
         authToken: await proofToken(record),
-        wrappedKey: await encryptData(
-          bufferToBase64(rawVaultKey),
-          record.wrapKey,
-        ),
+        wrappedKey: await wrapKeyBytes(rawVaultKey, record.wrapKey),
       },
     }
   } catch (err) {
@@ -231,23 +222,14 @@ export async function getDeviceProof(
   return { deviceId: record.deviceId, authToken: await proofToken(record) }
 }
 
-/** Unwraps a vault key the server stored for this browser. */
+/** Unwraps the vault key bytes the server stored for this browser. */
 export async function unwrapWithDevice(
   email: string,
   wrappedKey: string,
-): Promise<CryptoKey> {
+): Promise<Uint8Array> {
   const record = await getRecord(email)
   if (!record) throw new Error('This browser is no longer a trusted device.')
-  const raw = base64ToBuffer(
-    await decryptData<string>(wrappedKey, record.wrapKey),
-  )
-  return crypto.subtle.importKey(
-    'raw',
-    raw as BufferSource,
-    { name: 'AES-GCM' },
-    false,
-    ['encrypt', 'decrypt'],
-  )
+  return unwrapKeyBytes(wrappedKey, record.wrapKey)
 }
 
 /**

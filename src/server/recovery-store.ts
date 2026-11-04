@@ -12,6 +12,7 @@ import {
   vaultItems,
 } from '../db/schema'
 import { verifySecret } from './guards'
+import { isWrappedKey } from './validation'
 
 /**
  * Server-only storage for the two ways back into a vault besides the master
@@ -39,9 +40,7 @@ function isDeviceInput(value: unknown): value is DeviceInput {
     typeof d.name === 'string' &&
     typeof d.authToken === 'string' &&
     /^[0-9a-f]{64}$/i.test(d.authToken) &&
-    typeof d.wrappedKey === 'string' &&
-    d.wrappedKey.length > 0 &&
-    d.wrappedKey.length <= 2000
+    isWrappedKey(d.wrappedKey)
   )
 }
 
@@ -173,8 +172,12 @@ export function lockAwayVault(tx: Tx, user: User) {
         id: crypto.randomUUID(),
         userId: user.id,
         salt: user.salt,
+        kdfAlgorithm: user.kdfAlgorithm,
         kdfIterations: user.kdfIterations,
+        kdfMemoryKiB: user.kdfMemoryKiB,
+        kdfParallelism: user.kdfParallelism,
         authHash: user.authHash,
+        encryptedVaultKey: user.encryptedVaultKey,
         recoveryAuthHash: user.recoveryAuthHash,
         recoveryWrappedKey: user.recoveryWrappedKey,
         devices: JSON.stringify(devices),
@@ -209,9 +212,10 @@ export type LockedVaultProof =
   | { kind: 'device'; deviceId: string; authToken: string }
 
 /**
- * Checks a proof against a locked vault. Returns the wrapped vault key for
- * the recovery key and device proofs (the password proof needs none: the
- * browser derives the key from the password). Failures count toward a
+ * Checks a proof against a locked vault. Returns the vault key wrapped for
+ * that proof: by the recovery key, the device, or the master key derived
+ * from the old password (null for a vault made before the random vault key,
+ * whose items the old master key opens directly). Failures count toward a
  * per-vault lockout.
  */
 export function checkLockedVaultProof(
@@ -227,7 +231,9 @@ export function checkLockedVaultProof(
   switch (proof?.kind) {
     case 'password': {
       const check = verifySecret(account, proof.authKey, vault.authHash)
-      return check.ok ? { ok: true, wrappedKey: null } : fail(check.error)
+      return check.ok
+        ? { ok: true, wrappedKey: vault.encryptedVaultKey }
+        : fail(check.error)
     }
     case 'recoveryKey': {
       const check = verifySecret(account, proof.authKey, vault.recoveryAuthHash)

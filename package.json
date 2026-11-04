@@ -1,6 +1,11 @@
 {
   "name": "project-vault",
   "private": true,
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Amine-AD/project-vault.git"
+  },
   "type": "module",
   "imports": {
     "#/*": "./src/*"
@@ -28,7 +33,9 @@
     "better-sqlite3": "^13.0.3",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.4",
+    "hash-wasm": "^4.12.0",
     "lucide-react": "^1.61.0",
+    "matter-js": "^0.20.0",
     "nitro": "3.0.260610-beta",
     "otpauth": "^9.5.2",
     "react": "^19.2.0",
@@ -45,6 +52,7 @@
     "@tanstack/router-cli": "^1.132.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/better-sqlite3": "^9.6.0",
+    "@types/matter-js": "^0.20.2",
     "@types/node": "^22.10.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

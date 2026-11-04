@@ -112,7 +112,7 @@ export function SecuritySettings() {
 
       <SettingsSection
         title="Change master password"
-        description="Derives a new key and re-encrypts every item in your browser before anything is sent. You'll get a new recovery kit too."
+        description="Your items stay encrypted with the same vault key; only its copy locked by your password is replaced, in your browser. Your recovery key and trusted devices keep working."
       >
         <div className="p-5">
           <ChangePasswordForm />
@@ -137,12 +137,16 @@ function ChangePasswordForm() {
     onSubmit: async ({ value, formApi }) => {
       setServerError(null)
       try {
-        await updateMasterPassword(value.currentPassword, value.newPassword)
+        const { newRecoveryKit } = await updateMasterPassword(
+          value.currentPassword,
+          value.newPassword,
+        )
         formApi.reset()
         toast.success({
           title: 'Master password updated',
-          description:
-            'Every item was re-encrypted with your new key. Save your new recovery kit.',
+          description: newRecoveryKit
+            ? 'Your vault moved to a new encryption key. Save your new recovery kit.'
+            : 'Your recovery key and trusted devices keep working.',
         })
       } catch (error) {
         setServerError(

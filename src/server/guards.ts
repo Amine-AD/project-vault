@@ -50,6 +50,17 @@ export function lockoutError(account: string): string | null {
 }
 
 /**
+ * Compared against when there is no real hash (unknown email, no recovery
+ * kit), so a miss takes as long as a wrong guess and response times don't
+ * reveal which accounts exist.
+ */
+let dummyHash: string | null = null
+function standInHash() {
+  dummyHash ??= bcrypt.hashSync('onevault-no-such-secret', 10)
+  return dummyHash
+}
+
+/**
  * Checks a secret against its bcrypt hash with lockout accounting. Each kind
  * of secret uses its own `account` key (e.g. "recover:<email>"), so failures
  * of one don't lock out another.
@@ -61,7 +72,11 @@ export function verifySecret(
 ): { ok: true } | { ok: false; error: string | null } {
   const locked = lockoutError(account)
   if (locked) return { ok: false, error: locked }
-  if (!hash || !bcrypt.compareSync(String(secret ?? ''), hash)) {
+  const matches = bcrypt.compareSync(
+    String(secret ?? ''),
+    hash || standInHash(),
+  )
+  if (!hash || !matches) {
     recordFailure(account)
     return { ok: false, error: null }
   }

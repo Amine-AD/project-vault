@@ -1,4 +1,9 @@
-import { createRootRoute, HeadContent, Scripts } from '@tanstack/react-router'
+import {
+  createRootRoute,
+  HeadContent,
+  Scripts,
+  useRouter,
+} from '@tanstack/react-router'
 import { Toaster } from '#/components/ui/toast'
 import { themeInitScript } from '#/lib/theme'
 import { VaultProvider } from '../context/VaultContext'
@@ -30,11 +35,17 @@ export const Route = createRootRoute({
 })
 
 function RootDocument({ children }: { children: React.ReactNode }) {
+  // The CSP nonce (production server render only, see src/start.ts)
+  const nonce = useRouter().options.ssr?.nonce
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: static theme bootstrap, prevents a flash of the wrong theme */}
-        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <script
+          nonce={nonce}
+          suppressHydrationWarning
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: static theme bootstrap, prevents a flash of the wrong theme
+          dangerouslySetInnerHTML={{ __html: themeInitScript }}
+        />
         <HeadContent />
       </head>
       <body>

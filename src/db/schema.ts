@@ -5,7 +5,16 @@ export const users = sqliteTable('users', {
   email: text('email').notNull().unique(),
   salt: text('salt').notNull(),
   authHash: text('auth_hash').notNull(),
+  // Key derivation settings (see src/lib/kdf.ts). Rows made before Argon2id
+  // use 'pbkdf2-sha256' with no memory or parallelism.
+  kdfAlgorithm: text('kdf_algorithm').notNull().default('pbkdf2-sha256'),
   kdfIterations: integer('kdf_iterations').notNull().default(600000),
+  kdfMemoryKiB: integer('kdf_memory_kib'),
+  kdfParallelism: integer('kdf_parallelism'),
+  // The random vault key, encrypted with the master key. Null for vaults made
+  // before it existed, whose items are encrypted with the master key itself;
+  // those are upgraded on their next unlock.
+  encryptedVaultKey: text('encrypted_vault_key'),
   // Recovery kit (all null until the user creates one)
   recoveryAuthHash: text('recovery_auth_hash'),
   recoveryWrappedKey: text('recovery_wrapped_key'),
@@ -87,14 +96,24 @@ export const lockedVaults = sqliteTable('locked_vaults', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   salt: text('salt').notNull(),
+  kdfAlgorithm: text('kdf_algorithm').notNull().default('pbkdf2-sha256'),
   kdfIterations: integer('kdf_iterations').notNull(),
+  kdfMemoryKiB: integer('kdf_memory_kib'),
+  kdfParallelism: integer('kdf_parallelism'),
   authHash: text('auth_hash').notNull(),
+  encryptedVaultKey: text('encrypted_vault_key'),
   recoveryAuthHash: text('recovery_auth_hash'),
   recoveryWrappedKey: text('recovery_wrapped_key'),
   devices: text('devices').notNull().default('[]'), // JSON: LockedVaultDevice[]
   items: text('items').notNull().default('[]'), // JSON: VaultItemRow[]
   itemCount: integer('item_count').notNull(),
   lockedAt: integer('locked_at').notNull(),
+})
+
+/** Server-wide settings, e.g. the per-install secret (see src/server/secrets.ts). */
+export const appMeta = sqliteTable('app_meta', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
 })
 
 export interface LockedVaultDevice {

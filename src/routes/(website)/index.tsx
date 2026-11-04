@@ -4,6 +4,7 @@ import { Faq } from '#/features/website/faq'
 import { Features } from '#/features/website/features'
 import { Hero } from '#/features/website/hero'
 import { HowItWorks } from '#/features/website/how-it-works'
+import { OpenSource } from '#/features/website/open-source'
 import { SelfHost } from '#/features/website/self-host'
 import { SiteFooter } from '#/features/website/site-footer'
 import { SiteHeader } from '#/features/website/site-header'
@@ -19,6 +20,7 @@ function LandingPage() {
       <Hero />
       <HowItWorks />
       <Features />
+      <OpenSource />
       <SelfHost />
       <Faq />
       <Cta />

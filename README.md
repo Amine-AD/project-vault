@@ -1,3 +1,36 @@
+# OneVault
+
+A zero-knowledge password manager you can self-host. See
+[SECURITY.md](SECURITY.md) for how the encryption works.
+
+## License
+
+OneVault is free software, licensed under the
+[GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
+Copyright © 2026 Amine-AD.
+
+In short:
+
+- **You can** use it for anything, including at work, run it for yourself,
+  your family or your team, study it and change it.
+- **If you share it**, whether as a download or as a service other people
+  use over the network, you must offer them the complete source code of the
+  version you run, including your changes, under the same license. In the
+  app, the **Source code** links (site footer and the account menu) point to
+  `sourceCodeUrl` in `src/features/website/legal/legal-info.ts`; if you run
+  a modified version, change it to your modified source.
+- There is **no warranty**. See the license for the full terms.
+
+This summary isn't legal advice; the [LICENSE](LICENSE) text is what counts.
+
+### Name and logo
+
+The license covers the code, not the **OneVault** name or logo. If you
+offer a modified version to others, please give it a different name and
+logo so people don't mistake it for the official service.
+
+---
+
 Welcome to your new TanStack Start app!
 
 # Getting Started

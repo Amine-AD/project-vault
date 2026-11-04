@@ -1,6 +1,7 @@
 import { Link, useLocation } from '@tanstack/react-router'
 import {
   ChevronsUpDownIcon,
+  CodeIcon,
   FileTextIcon,
   HashIcon,
   KeyRoundIcon,
@@ -38,6 +39,7 @@ import {
   SidebarMenuItem,
 } from '#/components/ui/sidebar'
 import { useVault } from '#/context/VaultContext'
+import { LEGAL } from '#/features/website/legal/legal-info'
 import { type Theme, useTheme } from '#/lib/theme'
 
 interface AppSidebarProps {
@@ -234,6 +236,13 @@ function UserMenu() {
             <SettingsIcon />
             Settings
           </Link>
+        </MenuItem>
+        {/* The AGPL asks that every user can get the source code */}
+        <MenuItem value="source" asChild>
+          <a href={LEGAL.sourceCodeUrl} rel="noreferrer" target="_blank">
+            <CodeIcon />
+            Source code ({LEGAL.license})
+          </a>
         </MenuItem>
         <MenuSeparator />
         <MenuItem value="logout" variant="destructive" onSelect={handleLogout}>

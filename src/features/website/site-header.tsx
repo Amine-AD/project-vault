@@ -1,9 +1,11 @@
 import { Link } from '@tanstack/react-router'
 import { ArrowRightIcon } from 'lucide-react'
 import { BrandLogo } from '#/components/BrandLogo'
+import { GitHubIcon } from '#/components/GitHubIcon'
 import { ThemeToggle } from '#/components/ThemeToggle'
 import { Button } from '#/components/ui/button'
 import { useVault } from '#/context/VaultContext'
+import { LEGAL } from './legal/legal-info'
 import { MobileMenu } from './mobile-menu'
 
 const NAV = [
@@ -36,6 +38,23 @@ export function SiteHeader() {
         </nav>
 
         <div className="flex items-center gap-2">
+          <Button
+            asChild
+            className="size-11 max-md:hidden"
+            pill
+            size="icon-xl"
+            variant="ghost"
+          >
+            <a
+              aria-label="OneVault on GitHub"
+              href={LEGAL.sourceCodeUrl}
+              rel="noreferrer"
+              target="_blank"
+              title="OneVault on GitHub"
+            >
+              <GitHubIcon className="size-5" />
+            </a>
+          </Button>
           <ThemeToggle className="max-md:hidden" />
           {user ? (
             <Button asChild className={CTA_CLASS} pill size="xl">

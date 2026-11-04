@@ -20,7 +20,7 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
       <div className="w-full max-w-sm">{children}</div>
       <p className="mt-6 flex items-center gap-1.5 text-muted-foreground text-xs">
         <ShieldCheckIcon className="size-3.5 text-primary-ink" />
-        PBKDF2 600k + AES-256-GCM · zero-knowledge
+        Argon2id + AES-256-GCM · zero-knowledge
       </p>
     </div>
   )

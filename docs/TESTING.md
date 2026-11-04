@@ -49,6 +49,14 @@ and storage, so the app sees a separate browser:
 - Use passwords you can remember for the test accounts and write down every
   recovery key you're shown. Several tests need an old password or key.
 
+### After the encryption update
+
+The Argon2id + random vault key update changed how every key is made and
+stored. Even if they were ticked before, re-run sections **2–5** and
+**8–13**, then the new tests **9.5–9.7**, **15.6–15.12** and section **21**
+(upgrading old vaults). Back up `vault.db` before you start: accounts made
+earlier are upgraded the first time they're unlocked.
+
 ---
 
 ## 1. Website
@@ -92,7 +100,7 @@ and storage, so the app sees a separate browser:
       update as you type.
 - [x] **2.12 "Change" email.** On the password step, **Change** takes you back
       to the email step.
-- [ ] **2.13 Terms line.** Under **Create encrypted vault**: "By creating a
+- [X] **2.13 Terms line.** Under **Create encrypted vault**: "By creating a
       vault, you agree to the Terms of Service and Privacy Policy". Both links
       open in a new tab, and the sign-up tab stays on the password step.
 
@@ -193,17 +201,25 @@ Settings → **Data**.
 
 ## 9. Change master password (Settings → Security)
 
-- [ ] **9.1 Happy path.** Current + new password → success toast and a new
+Changing the password only re-wraps the vault key, so nothing else changes:
+no new recovery kit, no devices dropped.
+
+- [ ] **9.1 Happy path.** Current + new password → toast "Master password
+      updated · Your recovery key and trusted devices keep working". **No**
       recovery kit dialog. Items are all still there and readable.
 - [ ] **9.2** Sign out and in: the **old** password fails, the **new** one
       works.
-- [ ] **9.3** Wrong current password → an error, nothing changes.
+- [ ] **9.3** Wrong current password → "Current master password is
+      incorrect.", nothing changes.
 - [ ] **9.4** Email: "Your OneVault master password was changed".
-- [ ] **9.5** The **old** recovery key stops working; the new one works.
-- [ ] **9.6 Other devices.** Before changing, sign in on a second device
-      (trusted). After the change, Settings → Trusted devices shows only this
-      browser. The second device is added back the next time you unlock on
-      it with the new password.
+- [ ] **9.5 Recovery key still works.** The recovery key you had **before**
+      the change still recovers the vault (section 10), with all items.
+- [ ] **9.6 Other devices stay trusted.** Before changing, sign in on a
+      second device (trusted). After the change, Settings → Trusted devices
+      still lists both, and the second device can still use "Recover on this
+      device" (11.1).
+- [ ] **9.7 Fast.** The change takes about as long as an unlock, however
+      many items you have (items aren't re-encrypted).
 
 ## 10. Forgot password: recovery key
 
@@ -327,6 +343,41 @@ Put `RESEND_API_KEY` back in `.env` and restart.
       no table holds a password, recovery key or item contents.
 - [ ] **15.5 Locked out of other accounts.** Copying another account's item
       id into a request doesn't return or change its data.
+- [ ] **15.6 Key settings.** In `vault.db`, a new account's `users` row has
+      `kdf_algorithm` = `argon2id`, `kdf_memory_kib` = `65536`,
+      `kdf_iterations` = `3`, `kdf_parallelism` = `4`, and an
+      `encrypted_vault_key` (unreadable JSON with `iv` and `ciphertext`).
+- [ ] **15.7 Server secret.** After one sign-in attempt with an unknown
+      email, `app_meta` has a `server_secret` row. The source code contains
+      no secret (search `src/` for `secret-key`: nothing). With `APP_SECRET`
+      set in `.env` (32+ characters), no row is needed; with a shorter value
+      the server refuses to answer sign-ins and logs why.
+- [ ] **15.8 Same answer for unknown emails.** DevTools → Network: sign in
+      with an unknown email and with a real one. The pre-login response has
+      the same shape for both: a 24-character salt ending in `==` and the
+      same Argon2id settings. Both fail with "Invalid email or master
+      password" in about the same time.
+- [ ] **15.9 Security headers** (production build, 17.2). DevTools → Network
+      → the page document → Response headers include
+      `Content-Security-Policy` (with `script-src 'self' 'nonce-…'`),
+      `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+      `Referrer-Policy: no-referrer`. Reloading gives a different nonce. The
+      Console shows **no** "Refused to execute/load… Content Security
+      Policy" errors while you sign up, sign in, add items and recover.
+- [ ] **15.10 CSP blocks injected scripts** (production build). In the
+      Console, run
+      `document.body.append(Object.assign(document.createElement('script'),{src:'https://example.com/x.js'}))`
+      → a CSP error, nothing loads. `fetch('https://example.com')` → refused
+      by `connect-src`.
+- [ ] **15.11 Can't be framed.** A page on another origin with
+      `<iframe src="http://localhost:3000">` shows nothing (refused).
+- [ ] **15.12 The server refuses weak or broken input.** Run
+      `node_modules/.bin/tsx` on a small script that calls `parseKdf` and the
+      checks in `src/server/validation.ts` (or edit `DEFAULT_KDF` in
+      `src/lib/kdf.ts` to `iterations: 1` and try to sign up → "Invalid
+      request"; revert afterwards). Refused: Argon2id under 2 passes or
+      19 MiB, PBKDF2 under 600,000 rounds, salts under 16 bytes, items over
+      512 KB, malformed ids.
 
 ## 16. Look and feel
 
@@ -341,8 +392,11 @@ Put `RESEND_API_KEY` back in `.env` and restart.
 ## 17. Production build
 
 - [ ] **17.1** `npm run build` finishes without errors.
-- [ ] **17.2** `node dist/server/index.mjs`, then repeat 2.1, 3.1 and 5.1
-      against the built server.
+- [ ] **17.2** `node .output/server/index.mjs` (set `PORT=3100` to use
+      another port), then repeat 2.1, 3.1 and 5.1 against the built server,
+      plus 15.9–15.11 (security headers only exist in production builds).
+      Tip: run it from an empty folder to get a fresh `vault.db` there
+      instead of your development one.
 
 ## 18. Delete account (Settings → Account)
 
@@ -393,13 +447,53 @@ Use a throwaway test account.
 - [ ] **20.5** Placeholders in `[brackets]` are replaced with real details
       (in `src/features/website/legal/legal-info.ts`) before launch.
 
+## 21. Upgrading vaults made with older versions
+
+Vaults created before this version use PBKDF2 and have no random vault key.
+They're upgraded the first time they're unlocked. **Back up `vault.db`
+first** (copy the file while the server is stopped).
+
+- [ ] **21.1 Upgrade on unlock.** Sign in to an account created with the old
+      version → the vault opens with every item, and a **Save your recovery
+      kit** dialog shows (the old kit wrapped the old key, so a new one is
+      issued). In `vault.db`, that user now has `kdf_algorithm` =
+      `argon2id` and an `encrypted_vault_key`.
+- [ ] **21.2 Items intact.** Titles, usernames, passwords, notes, tags,
+      favorites and custom fields all match what you had. Items so old that
+      their type, tags or favorite flag were stored in plain text keep them,
+      and afterwards `vault_items` shows `type` = `item`, `is_favorite` = `0`,
+      `tags` = `[]` for every row.
+- [ ] **21.3 No alert email.** The upgrade doesn't send "Your master password
+      was changed".
+- [ ] **21.4 Only once.** Lock and unlock again → no recovery kit dialog.
+- [ ] **21.5 Old recovery key.** The recovery key from before the upgrade no
+      longer works; the new one does.
+- [ ] **21.6 Other devices.** Devices trusted before the upgrade are removed
+      (their wrapped key was the old one) and trusted again the next time you
+      unlock on them. This browser stays trusted.
+- [ ] **21.7 Recovery without unlocking first.** On another old account,
+      skip signing in and use **Forgot password** with its recovery key
+      (section 10) → all items come back, and the account is upgraded the
+      same way.
+- [ ] **21.8 Changing the password of an old vault.** If an old account is
+      upgraded through Settings → Change master password instead (e.g. the
+      upgrade on unlock failed), you get the new recovery kit dialog there,
+      with the toast "Your vault moved to a new encryption key".
+- [ ] **21.9 Locked vaults from before.** A locked vault (section 12) made by
+      the old version can still be restored with its old password, recovery
+      key or device.
+
 ---
 
 ## Known behaviour (not bugs)
 
-- Changing the master password, recovering or starting a new vault removes
-  other trusted devices. They're trusted again the next time you unlock on
-  them (if "Trust this device" was on there).
+- Recovering or starting a new vault removes other trusted devices (they
+  may belong to whoever forgot the password). They're trusted again the
+  next time you unlock on them (if "Trust this device" was on there).
+  Changing the master password keeps them.
+- Unlocking takes about a second: Argon2id deliberately uses 64 MiB of
+  memory so password guessing is expensive. On older phones it can take a
+  few seconds.
 - Clearing a browser's site data removes its trust.
 - Unchecking "Trust this device" while starting a new vault means that
   browser can't restore the locked items; use the old password or key.

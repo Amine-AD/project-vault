@@ -11,7 +11,7 @@ const STEPS: {
   {
     title: 'Create',
     description:
-      'Pick a master password. Your browser turns it into two keys: one to sign in, one to encrypt. Neither is ever sent.',
+      'Pick a master password. Your browser runs it through Argon2id to make two keys: one proves it’s you, one unlocks your vault. The password itself is never sent.',
     visual: (
       <>
         <Sticker className="-top-3 right-6" color="lime" tilt={5}>
@@ -81,7 +81,7 @@ export function HowItWorks() {
       <div className="mx-auto max-w-7xl space-y-12">
         <SectionHeading
           title="How OneVault works"
-          description="No accounts to trust, no keys on the server. Three steps and you're in."
+          description="Your master password never leaves your browser. Three steps and you're in."
         />
         <div className="grid gap-5 md:grid-cols-3">
           {STEPS.map((step, index) => (

@@ -1,10 +1,11 @@
 import { CheckIcon } from 'lucide-react'
 import { SectionHeading } from './components/section-heading'
+import { LEGAL } from './legal/legal-info'
 
 const STEPS = [
   {
     comment: 'Clone the repository',
-    command: 'git clone <your-repo-url> onevault',
+    command: `git clone ${LEGAL.sourceCodeUrl}.git onevault`,
   },
   { comment: 'Install dependencies', command: 'cd onevault && npm install' },
   { comment: 'Start your vault', command: 'npm run dev' },

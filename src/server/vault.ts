@@ -5,6 +5,12 @@ import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db'
 import { sessions, users, vaultItems } from '../db/schema'
 import { NEUTRAL_METADATA, toClientRow } from './item-rows'
+import {
+  INVALID_REQUEST,
+  isEncryptedPayload,
+  isItemId,
+  parseItemList,
+} from './validation'
 
 const SESSION_COOKIE_NAME = 'vault_session'
 
@@ -70,6 +76,12 @@ export const saveVaultItem = createServerFn({ method: 'POST' })
   .validator((data: EncryptedVaultItemInput) => data)
   .handler(async ({ data }) => {
     const user = requireUser()
+    if (
+      (data.id !== undefined && !isItemId(data.id)) ||
+      !isEncryptedPayload(data.encryptedData)
+    ) {
+      throw new Error(INVALID_REQUEST)
+    }
     const now = Date.now()
     const itemId = data.id || crypto.randomUUID()
 
@@ -117,7 +129,9 @@ export const deleteVaultItem = createServerFn({ method: 'POST' })
     const user = requireUser()
 
     db.delete(vaultItems)
-      .where(and(eq(vaultItems.id, data.id), eq(vaultItems.userId, user.id)))
+      .where(
+        and(eq(vaultItems.id, String(data.id)), eq(vaultItems.userId, user.id)),
+      )
       .run()
 
     return { success: true }
@@ -127,17 +141,21 @@ export const deleteVaultItem = createServerFn({ method: 'POST' })
  * Batch import encrypted items
  */
 export const batchImportVaultItems = createServerFn({ method: 'POST' })
-  .validator((data: { items: EncryptedVaultItemInput[] }) => data)
+  .validator(
+    (data: { items: Array<{ id: string; encryptedData: string }> }) => data,
+  )
   .handler(async ({ data }) => {
     const user = requireUser()
+    const items = parseItemList(data.items)
+    if (!items) throw new Error(INVALID_REQUEST)
     const now = Date.now()
 
     db.transaction((tx) => {
-      for (const item of data.items) {
+      for (const item of items) {
         tx.insert(vaultItems)
           .values({
             ...NEUTRAL_METADATA,
-            id: item.id || crypto.randomUUID(),
+            id: item.id,
             userId: user.id,
             encryptedData: item.encryptedData,
             createdAt: now,
@@ -147,7 +165,7 @@ export const batchImportVaultItems = createServerFn({ method: 'POST' })
       }
     })
 
-    return { success: true, count: data.items.length }
+    return { success: true, count: items.length }
   })
 
 /**
@@ -171,9 +189,11 @@ export const rewrapVaultItems = createServerFn({ method: 'POST' })
   )
   .handler(async ({ data }) => {
     const user = requireUser()
+    const items = parseItemList(data.items)
+    if (!items) throw new Error(INVALID_REQUEST)
 
     db.transaction((tx) => {
-      for (const item of data.items) {
+      for (const item of items) {
         tx.update(vaultItems)
           .set({ ...NEUTRAL_METADATA, encryptedData: item.encryptedData })
           .where(
@@ -183,5 +203,5 @@ export const rewrapVaultItems = createServerFn({ method: 'POST' })
       }
     })
 
-    return { success: true, count: data.items.length }
+    return { success: true, count: items.length }
   })

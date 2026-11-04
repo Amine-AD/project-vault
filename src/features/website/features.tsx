@@ -1,21 +1,26 @@
 import { CheckIcon, MinusIcon } from 'lucide-react'
 import { cn } from '#/lib/utils'
+import { PhysicsPile, type PileItem } from './components/physics-pile'
 import { SectionHeading } from './components/section-heading'
 import { Sticker } from './components/sticker'
 
-const CAPABILITIES = [
-  'Logins',
-  'Secure notes',
-  '2FA codes',
-  'Password generator',
-  'Custom fields',
-  'Tags',
-  'Favorites',
-  'CSV import',
-  'JSON export',
-  'Auto-lock',
-  'Clipboard clearing',
-  'Dark mode',
+/** Most important first: on small screens the last ones are left out. */
+const CAPABILITIES: PileItem[] = [
+  { label: 'Logins', tone: 'blue' },
+  { label: '2FA codes', tone: 'lime' },
+  { label: 'Secure notes', tone: 'paper' },
+  { label: 'Password generator', tone: 'ink' },
+  { label: 'Recovery kit', tone: 'lime' },
+  { label: 'Trusted devices', tone: 'blue' },
+  { label: 'CSV import', tone: 'paper' },
+  { label: 'Auto-lock', tone: 'ink' },
+  { label: 'Custom fields', tone: 'paper' },
+  { label: 'Argon2id', tone: 'lime' },
+  { label: 'Tags', tone: 'blue' },
+  { label: 'JSON export', tone: 'ink' },
+  { label: 'Favorites', tone: 'paper' },
+  { label: 'Clipboard clearing', tone: 'blue' },
+  { label: 'Self-hosted', tone: 'lime' },
 ]
 
 type Cell = string | boolean
@@ -67,19 +72,12 @@ export function Features() {
             title="Everything you need, nothing you don't"
             description="The essentials of a password manager, done carefully."
           />
-          <ul className="flex flex-wrap gap-3">
-            {CAPABILITIES.map((label, i) => (
-              <li
-                className={cn(
-                  'rounded-full border bg-card px-5 py-2.5 font-medium text-base shadow-xs/5 md:text-lg',
-                  i % 5 === 2 && 'border-transparent bg-primary text-white',
-                )}
-                key={label}
-              >
-                {label}
-              </li>
-            ))}
-          </ul>
+          <div className="space-y-4">
+            <PhysicsPile items={CAPABILITIES} />
+            <p className="px-2 text-muted-foreground">
+              Go on, grab one and toss it.
+            </p>
+          </div>
         </div>
 
         <div className="space-y-10">

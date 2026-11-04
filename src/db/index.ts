@@ -1,4 +1,3 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -89,22 +88,40 @@ sqlite.exec(`
     ON email_verifications(email, purpose);
   CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
   CREATE INDEX IF NOT EXISTS idx_vault_items_user_id ON vault_items(user_id);
+
+  CREATE TABLE IF NOT EXISTS app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `)
 
 // Columns added after the first release
-const userColumns = new Set(
-  (sqlite.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map(
-    (column) => column.name,
-  ),
-)
-for (const [name, type] of [
+function addMissingColumns(table: string, columns: Array<[string, string]>) {
+  const existing = new Set(
+    (
+      sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+    ).map((column) => column.name),
+  )
+  for (const [name, type] of columns) {
+    if (!existing.has(name)) {
+      sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`)
+    }
+  }
+}
+
+const KDF_COLUMNS: Array<[string, string]> = [
+  ['kdf_algorithm', "TEXT NOT NULL DEFAULT 'pbkdf2-sha256'"],
+  ['kdf_memory_kib', 'INTEGER'],
+  ['kdf_parallelism', 'INTEGER'],
+  ['encrypted_vault_key', 'TEXT'],
+]
+
+addMissingColumns('users', [
   ['recovery_auth_hash', 'TEXT'],
   ['recovery_wrapped_key', 'TEXT'],
   ['recovery_created_at', 'INTEGER'],
-]) {
-  if (!userColumns.has(name)) {
-    sqlite.exec(`ALTER TABLE users ADD COLUMN ${name} ${type}`)
-  }
-}
+  ...KDF_COLUMNS,
+])
+addMissingColumns('locked_vaults', KDF_COLUMNS)
 
 export const db = drizzle(sqlite, { schema })

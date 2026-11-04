@@ -22,7 +22,16 @@ export const LEGAL = {
   /** Payment provider / merchant of record. */
   paymentProvider: '[Payment Provider]',
   /** Open-source license of the code. */
-  license: '[AGPL-3.0]',
+  license: 'AGPL-3.0',
+  /**
+   * Where the source code of the version running here can be downloaded.
+   * The AGPL requires offering it to everyone who uses the app over a
+   * network. If you run a modified version, point this at your modified
+   * source (e.g. your fork), not the original repository.
+   */
+  sourceCodeUrl: 'https://github.com/Amine-AD/project-vault',
+  /** The full license text (same as the LICENSE file in the repository). */
+  licenseUrl: 'https://www.gnu.org/licenses/agpl-3.0.html',
   /** Days after purchase in which a refund can be asked for. */
   refundDays: 14,
   /** Minimum age to use the service. */

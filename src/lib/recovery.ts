@@ -1,10 +1,4 @@
-import {
-  base64ToBuffer,
-  bufferToBase64,
-  bufferToHex,
-  decryptData,
-  encryptData,
-} from './crypto'
+import { bufferToHex, unwrapKeyBytes, wrapKeyBytes } from './crypto'
 
 /**
  * Recovery kit
@@ -127,7 +121,7 @@ export async function createRecoveryKit(rawVaultKey: Uint8Array): Promise<{
 }> {
   const keyBytes = crypto.getRandomValues(new Uint8Array(KEY_BYTES))
   const { wrappingKey, authKey } = await deriveRecoveryKeys(keyBytes)
-  const wrappedKey = await encryptData(bufferToBase64(rawVaultKey), wrappingKey)
+  const wrappedKey = await wrapKeyBytes(rawVaultKey, wrappingKey)
   return {
     recoveryKey: formatRecoveryKey(encodeBase32(keyBytes)),
     material: { authKey, wrappedKey },
@@ -139,18 +133,11 @@ export async function recoveryAuthKey(keyBytes: Uint8Array) {
   return (await deriveRecoveryKeys(keyBytes)).authKey
 }
 
-/** Unwraps the stored vault key with the recovery key. */
+/** Unwraps the stored vault key bytes with the recovery key. */
 export async function unwrapVaultKey(
   wrappedKey: string,
   keyBytes: Uint8Array,
-): Promise<CryptoKey> {
+): Promise<Uint8Array> {
   const { wrappingKey } = await deriveRecoveryKeys(keyBytes)
-  const raw = base64ToBuffer(await decryptData<string>(wrappedKey, wrappingKey))
-  return crypto.subtle.importKey(
-    'raw',
-    raw as BufferSource,
-    { name: 'AES-GCM' },
-    false,
-    ['encrypt', 'decrypt'],
-  )
+  return unwrapKeyBytes(wrappedKey, wrappingKey)
 }

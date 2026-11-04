@@ -11,12 +11,13 @@ import {
   lockedVaultDevices,
   lockedVaultItems,
 } from './recovery-store'
+import { INVALID_REQUEST, kdfFromRow, parseItemList } from './validation'
 
 /**
  * Vaults set aside by a reset without the recovery key. Their items stay
- * encrypted with the old master password; the browser opens them with the
- * old password, old recovery key or a device trusted before the reset,
- * re-encrypts them with the current vault key and sends them back.
+ * encrypted with the old vault key; the browser opens it with the old
+ * password, old recovery key or a device trusted before the reset,
+ * re-encrypts the items with the current vault key and sends them back.
  */
 
 function findLockedVault(userId: string, id: string) {
@@ -50,7 +51,7 @@ export const listLockedVaults = createServerFn({ method: 'GET' }).handler(
         itemCount: vault.itemCount,
         // Not secret: needed to derive the old key from the old password
         salt: vault.salt,
-        kdfIterations: vault.kdfIterations,
+        kdf: kdfFromRow(vault),
         hasRecoveryKey: !!vault.recoveryWrappedKey,
         deviceIds: lockedVaultDevices(vault).map((d) => d.id),
       }))
@@ -99,13 +100,11 @@ export const restoreLockedVault = createServerFn({ method: 'POST' })
     const check = checkLockedVaultProof(vault, data.proof)
     if (!check.ok) return { success: false as const, error: check.error }
 
+    const items = parseItemList(data.items)
+    if (!items) return { success: false as const, error: INVALID_REQUEST }
+
     const locked = lockedVaultItems(vault)
-    const sent = new Map(
-      (Array.isArray(data.items) ? data.items : []).map((i) => [
-        String(i.id),
-        String(i.encryptedData ?? ''),
-      ]),
-    )
+    const sent = new Map(items.map((i) => [i.id, i.encryptedData]))
     if (locked.some((row) => !sent.get(row.id))) {
       return {
         success: false as const,

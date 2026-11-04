@@ -9,11 +9,11 @@ import { SectionHeading } from './components/section-heading'
 const QUESTIONS = [
   {
     q: 'What does zero-knowledge mean?',
-    a: 'Your master password never leaves your browser. It derives the key that encrypts your items, and the server only ever stores the encrypted result. Without your master password, the data is unreadable — to us, your host, or anyone with a copy of the database.',
+    a: 'Your master password never leaves your browser. It unlocks the key that encrypts your items, and the server only ever stores the encrypted result. Without your master password, recovery key or a trusted device, the data is unreadable: to us, your host, or anyone with a copy of the database.',
   },
   {
     q: 'What happens if I forget my master password?',
-    a: "It can't be recovered or reset — that's the trade-off of zero-knowledge. Keep a JSON export somewhere safe as a backup.",
+    a: "Nobody can reset it for you, not even us. That's the point of zero-knowledge. Instead, use the recovery key you saved when you created your vault, or a browser you marked as trusted, plus a code sent to your email. If you've lost both, you can start a new vault and your old items stay locked away, not deleted, until you find the old password or key.",
   },
   {
     q: 'Can I import from 1Password or Bitwarden?',
@@ -22,6 +22,10 @@ const QUESTIONS = [
   {
     q: 'Does it do two-factor codes?',
     a: 'Yes. Paste a site’s 2FA setup key into a login and OneVault shows the live 6-digit code with a countdown.',
+  },
+  {
+    q: 'Is OneVault open source?',
+    a: 'Yes, under the AGPL-3.0 license. Anyone can read, run and change the code. If someone offers a modified version as a service, they have to publish their changes too.',
   },
   {
     q: 'Where is my data stored?',

@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import { BrandWordmark } from '#/components/BrandLogo'
+import { GitHubIcon } from '#/components/GitHubIcon'
 import { ThemeToggle } from '#/components/ThemeToggle'
 import { Button } from '#/components/ui/button'
 import {
@@ -20,6 +21,7 @@ import {
 } from '#/components/ui/sheet'
 import { cn } from '#/lib/utils'
 import { WhitePillButton } from './components/pill-link'
+import { LEGAL } from './legal/legal-info'
 
 interface MobileMenuProps {
   nav: { href: string; label: string }[]
@@ -169,6 +171,16 @@ export function MobileMenu({ nav, signedIn }: MobileMenuProps) {
                 </span>
                 <ThemeToggle tone="inverse" />
               </div>
+
+              <a
+                className="flex items-center justify-between border-white/20 border-t pt-6 font-mono text-white/75 text-xs uppercase tracking-[0.08em] outline-none hover:text-brand-lime focus-visible:text-brand-lime"
+                href={LEGAL.sourceCodeUrl}
+                rel="noreferrer"
+                target="_blank"
+              >
+                Source code on GitHub
+                <GitHubIcon className="size-5" />
+              </a>
             </div>
           </ArkDialog.Content>
         </SheetPositioner>

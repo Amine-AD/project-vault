@@ -4,6 +4,7 @@ import { BrandWordmark } from '#/components/BrandLogo'
 import { useVault } from '#/context/VaultContext'
 import { WhitePillButton } from './components/pill-link'
 import { Sticker } from './components/sticker'
+import { LEGAL } from './legal/legal-info'
 
 type FooterLink =
   | { label: string; href: string }
@@ -35,6 +36,8 @@ const COLUMNS: { title: string; links: FooterLink[] }[] = [
     links: [
       { label: 'Privacy', to: '/privacy' },
       { label: 'Terms', to: '/terms' },
+      // Offering the source to every user is what the AGPL asks of us
+      { label: 'Source code', href: LEGAL.sourceCodeUrl },
     ],
   },
 ]
@@ -89,7 +92,14 @@ export function SiteFooter() {
                 </p>
                 {col.links.map((link) =>
                   'href' in link ? (
-                    <a className={LINK_CLASS} href={link.href} key={link.label}>
+                    <a
+                      className={LINK_CLASS}
+                      href={link.href}
+                      key={link.label}
+                      {...(link.href.startsWith('http')
+                        ? { target: '_blank', rel: 'noreferrer' }
+                        : {})}
+                    >
                       {link.label}
                     </a>
                   ) : (
@@ -116,13 +126,25 @@ export function SiteFooter() {
           <ScrollSeal />
         </div>
 
-        {/* Bottom */}
-        <div className="-mt-6 flex w-full flex-wrap items-start justify-between gap-2 border-[#2c2c2f] border-t pt-6 md:-mt-10 text-[#a3a09a] text-sm leading-[18px] tracking-[-0.02em]">
+        {/* Bottom. Stacked above the wordmark, whose box overlaps this row
+            (negative margins) and would otherwise swallow clicks on its links */}
+        <div className="relative z-10 -mt-6 flex w-full flex-wrap items-start justify-between gap-2 border-[#2c2c2f] border-t pt-6 md:-mt-10 text-[#a3a09a] text-sm leading-[18px] tracking-[-0.02em]">
           <p>
             © {new Date().getFullYear()} OneVault. Encrypted with too many
             rounds.
           </p>
-          <p>Your master password never leaves your browser.</p>
+          <p>
+            Open source under the{' '}
+            <a
+              className="underline underline-offset-2 hover:text-brand-lime"
+              href={LEGAL.licenseUrl}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {LEGAL.license}
+            </a>{' '}
+            license. Your master password never leaves your browser.
+          </p>
         </div>
       </div>
     </footer>

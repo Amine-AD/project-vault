@@ -16,6 +16,7 @@ import {
   users,
   vaultItems,
 } from '../db/schema'
+import { DEFAULT_KDF } from '../lib/kdf'
 import {
   EmailDeliveryError,
   sendAccountDeleted,
@@ -50,27 +51,46 @@ import {
   lockAwayVault,
   saveDevice,
 } from './recovery-store'
+import { keyedHash } from './secrets'
+import {
+  INVALID_REQUEST,
+  isAuthKey,
+  isRecoveryInput,
+  kdfColumns,
+  kdfFromRow,
+  type PasswordKeysInput,
+  parseItemList,
+  parsePasswordKeys,
+  type RecoveryInput,
+  type ReEncryptedItem,
+} from './validation'
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 const INVALID_CREDENTIALS = 'Invalid email or master password.'
 const INVALID_RECOVERY = "That recovery key doesn't match this email."
 const UNTRUSTED_DEVICE =
   'This browser isn’t a trusted device for this vault anymore. Use your recovery key instead.'
-
-/** Client-made recovery kit material (see src/lib/recovery.ts). */
-interface RecoveryInput {
-  authKey: string
-  wrappedKey: string
-}
+const VAULT_CHANGED =
+  'Your vault changed while this was in progress. Nothing was saved; try again.'
 
 /** How a forgotten-password recovery proves it can open the vault. */
 type RecoveryProof =
   | { kind: 'recoveryKey'; authKey: string }
   | ({ kind: 'device' } & DeviceProofInput)
 
-interface ReEncryptedItem {
-  id: string
-  encryptedData: string
+/**
+ * Salt, KDF settings and auth key for a master password, plus the vault key
+ * wrapped with the master key derived from it. See src/lib/crypto.ts.
+ */
+type PasswordKeys = PasswordKeysInput
+
+/**
+ * A new vault key for a vault that had none (made before the random vault
+ * key): every item re-encrypted with it, and a recovery kit that wraps it.
+ */
+interface KeyRotation {
+  items: ReEncryptedItem[]
+  recovery: RecoveryInput
 }
 
 function normalizeEmail(email: string) {
@@ -98,6 +118,18 @@ function recoveryColumns(recovery: RecoveryInput | null | undefined) {
       }
 }
 
+/** Users columns for a new master password. */
+function passwordColumns(keys: PasswordKeys) {
+  return {
+    salt: keys.salt,
+    ...kdfColumns(keys.kdf),
+    // The client-derived authKey is hashed again before storage
+    authHash: bcrypt.hashSync(keys.authKey, 10),
+    encryptedVaultKey: keys.encryptedVaultKey,
+    updatedAt: Date.now(),
+  }
+}
+
 /** Creates a session row and sets the HttpOnly cookie. */
 function startSession(userId: string) {
   const now = Date.now()
@@ -119,6 +151,35 @@ function startSession(userId: string) {
   })
 }
 
+/**
+ * Validates a key rotation: well-formed, with exactly one new ciphertext for
+ * every item the user has (one left out would become unreadable).
+ */
+function parseRotation(
+  userId: string,
+  value: unknown,
+): { ok: true; rotation: KeyRotation } | { ok: false; error: string } {
+  const r = (value ?? {}) as Record<string, unknown>
+  const items = parseItemList(r.items)
+  if (!items || !isRecoveryInput(r.recovery)) {
+    return { ok: false, error: INVALID_REQUEST }
+  }
+  const current = db
+    .select({ id: vaultItems.id })
+    .from(vaultItems)
+    .where(eq(vaultItems.userId, userId))
+    .all()
+  const sent = new Set(items.map((i) => i.id))
+  if (
+    sent.size !== items.length ||
+    sent.size !== current.length ||
+    current.some((row) => !sent.has(row.id))
+  ) {
+    return { ok: false, error: VAULT_CHANGED }
+  }
+  return { ok: true, rotation: { items, recovery: r.recovery } }
+}
+
 /** Replaces every item's ciphertext and neutralizes its plaintext metadata. */
 function writeReEncryptedItems(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
@@ -133,28 +194,32 @@ function writeReEncryptedItems(
   }
 }
 
-// Deterministic salt generator for non-existing emails to prevent timing/enumeration attacks
-function generateFakeSalt(email: string): string {
-  const hmac = crypto.createHmac('sha256', 'vault-fake-salt-secret-key-salt')
-  hmac.update(email.toLowerCase().trim())
-  return hmac.digest('base64').slice(0, 24)
+/**
+ * Stand-in salt for an email with no vault, so the pre-login answer looks
+ * the same either way. Keyed with this server's secret: with a key in the
+ * public source code, anyone could compute it and spot the stand-ins. Same
+ * shape as a real salt (16 bytes, base64).
+ */
+function fakeSalt(email: string): string {
+  return keyedHash('prelogin-salt', email).subarray(0, 16).toString('base64')
 }
 
 /**
- * Pre-login endpoint to fetch the user's KDF salt
+ * Pre-login endpoint: the salt and KDF settings the browser needs to derive
+ * keys from the master password.
  */
 export const getPreloginData = createServerFn({ method: 'POST' })
   .validator((data: { email: string }) => data)
   .handler(async ({ data }) => {
-    const email = data.email.toLowerCase().trim()
+    const email = normalizeEmail(data.email)
     const user = db.select().from(users).where(eq(users.email, email)).get()
 
     // Same shape either way, so this can't be used to find registered emails
     if (user) {
-      return { salt: user.salt, kdfIterations: user.kdfIterations }
+      return { salt: user.salt, kdf: kdfFromRow(user) }
     }
 
-    return { salt: generateFakeSalt(email), kdfIterations: 600000 }
+    return { salt: fakeSalt(email), kdf: DEFAULT_KDF }
   })
 
 /**
@@ -237,18 +302,17 @@ export const verifyEmailCode = createServerFn({ method: 'POST' })
   })
 
 /**
- * Register user with salt, client-derived authKey and a recovery kit. Needs
- * the ticket from a verified sign-up code.
+ * Register a user: KDF salt and settings, client-derived authKey, the vault
+ * key wrapped with the master key, and a recovery kit. Needs the ticket from
+ * a verified sign-up code.
  */
 export const registerUser = createServerFn({ method: 'POST' })
   .validator(
     (data: {
       email: string
       ticket: string
-      salt: string
-      authKey: string
-      kdfIterations?: number
-      recovery?: RecoveryInput
+      keys: PasswordKeys
+      recovery: RecoveryInput
       device?: DeviceInput
     }) => data,
   )
@@ -257,6 +321,10 @@ export const registerUser = createServerFn({ method: 'POST' })
 
     if (!isValidEmail(email)) {
       return { success: false, error: 'Please enter a valid email address.' }
+    }
+    const keys = parsePasswordKeys(data.keys)
+    if (!keys || !isRecoveryInput(data.recovery)) {
+      return { success: false, error: INVALID_REQUEST }
     }
 
     const verification = findTicket(email, 'signup', String(data.ticket ?? ''))
@@ -281,13 +349,9 @@ export const registerUser = createServerFn({ method: 'POST' })
         .values({
           id: userId,
           email,
-          salt: data.salt,
-          // Hash the client-derived authKey on server before storage
-          authHash: bcrypt.hashSync(data.authKey, 10),
-          kdfIterations: data.kdfIterations || 600000,
+          ...passwordColumns(keys),
           ...recoveryColumns(data.recovery),
           createdAt: now,
-          updatedAt: now,
         })
         .run()
       saveDevice(tx, userId, data.device)
@@ -300,30 +364,31 @@ export const registerUser = createServerFn({ method: 'POST' })
   })
 
 /**
- * Login user by comparing client-derived authKey. Also used to unlock an
- * already signed-in vault. Either way the browser can send its device
- * enrollment, which trusts it for recovery (or refreshes its wrapped key).
+ * Sign in by comparing the client-derived authKey. Also used to unlock an
+ * already signed-in vault. Returns the wrapped vault key (null for vaults
+ * made before it existed), which only the master key can open.
  */
 export const loginUser = createServerFn({ method: 'POST' })
-  .validator(
-    (data: { email: string; authKey: string; device?: DeviceInput }) => data,
-  )
+  .validator((data: { email: string; authKey: string }) => data)
   .handler(async ({ data }) => {
-    const email = data.email.toLowerCase().trim()
+    const email = normalizeEmail(data.email)
     const user = db.select().from(users).where(eq(users.email, email)).get()
 
     const check = verifySecret(email, data.authKey, user?.authHash)
     if (!check.ok || !user) {
       return {
-        success: false,
+        success: false as const,
         error: (!check.ok && check.error) || INVALID_CREDENTIALS,
       }
     }
 
-    saveDevice(db, user.id, data.device)
     startSession(user.id)
 
-    return { success: true, user: { id: user.id, email: user.email } }
+    return {
+      success: true as const,
+      user: { id: user.id, email: user.email },
+      encryptedVaultKey: user.encryptedVaultKey,
+    }
   })
 
 /**
@@ -356,21 +421,44 @@ export const getCurrentUser = createServerFn({ method: 'GET' }).handler(
 )
 
 /**
- * Change master password, re-encrypting every item. The old recovery kit
- * wraps the old vault key, so it's replaced by the new one sent along (or
- * cleared if none is sent). Other trusted devices hold the old key too, so
- * they're dropped and trusted again the next time they unlock; this browser
- * stays trusted with the new key.
+ * The signed-in user's salt, KDF settings and wrapped vault key, so the
+ * browser can re-open the vault key when the master password is typed again
+ * (new recovery kit, trusting this browser, changing the password). Only
+ * for a signed-in session: the wrapped key is never handed out before
+ * sign-in, so it can't be fetched by email and guessed at offline.
+ */
+export const getKeyMaterial = createServerFn({ method: 'GET' }).handler(
+  async () => {
+    const user = requireSessionUser()
+    return {
+      salt: user.salt,
+      kdf: kdfFromRow(user),
+      encryptedVaultKey: user.encryptedVaultKey,
+    }
+  },
+)
+
+/**
+ * Set a new master password (or new KDF settings for the same password).
+ * Only the wrapped vault key changes: the items, recovery kit and trusted
+ * devices all use the vault key itself and keep working.
+ *
+ * A vault made before the random vault key also sends `rotation`: a new
+ * vault key, every item re-encrypted with it and a new recovery kit. Other
+ * trusted devices hold the old key, so they're dropped and trusted again the
+ * next time they unlock; this browser stays trusted with the new key.
+ *
+ * `reason: 'upgrade'` is the automatic upgrade on unlock (same password), so
+ * no "password changed" email is sent.
  */
 export const changeMasterPassword = createServerFn({ method: 'POST' })
   .validator(
     (data: {
       oldAuthKey: string
-      newSalt: string
-      newAuthKey: string
-      reEncryptedItems: ReEncryptedItem[]
-      newRecovery?: RecoveryInput
+      keys: PasswordKeys
+      rotation?: KeyRotation
       device?: DeviceInput
+      reason?: 'password' | 'upgrade'
     }) => data,
   )
   .handler(async ({ data }) => {
@@ -384,22 +472,34 @@ export const changeMasterPassword = createServerFn({ method: 'POST' })
       }
     }
 
+    const keys = parsePasswordKeys(data.keys)
+    if (!keys) return { success: false, error: INVALID_REQUEST }
+
+    let rotation: KeyRotation | null = null
+    if (data.rotation || !user.encryptedVaultKey) {
+      const parsed = parseRotation(user.id, data.rotation)
+      if (!parsed.ok) return { success: false, error: parsed.error }
+      rotation = parsed.rotation
+    }
+
     db.transaction((tx) => {
       tx.update(users)
         .set({
-          salt: data.newSalt,
-          authHash: bcrypt.hashSync(data.newAuthKey, 10),
-          ...recoveryColumns(data.newRecovery),
-          updatedAt: Date.now(),
+          ...passwordColumns(keys),
+          ...(rotation ? recoveryColumns(rotation.recovery) : {}),
         })
         .where(eq(users.id, user.id))
         .run()
-      writeReEncryptedItems(tx, user.id, data.reEncryptedItems)
-      deleteDevices(tx, user.id, deviceId(data.device))
-      saveDevice(tx, user.id, data.device)
+      if (rotation) {
+        writeReEncryptedItems(tx, user.id, rotation.items)
+        deleteDevices(tx, user.id, deviceId(data.device))
+        saveDevice(tx, user.id, data.device)
+      }
     })
 
-    void sendSecurityAlert(user.email, 'changed')
+    if (data.reason !== 'upgrade') {
+      void sendSecurityAlert(user.email, 'changed')
+    }
 
     return { success: true }
   })
@@ -422,6 +522,10 @@ export const setRecoveryKit = createServerFn({ method: 'POST' })
   .validator((data: { authKey: string; recovery: RecoveryInput }) => data)
   .handler(async ({ data }) => {
     const user = requireSessionUser()
+
+    if (!isRecoveryInput(data.recovery)) {
+      return { success: false, error: INVALID_REQUEST }
+    }
 
     const check = verifySecret(user.email, data.authKey, user.authHash)
     if (!check.ok) {
@@ -456,7 +560,7 @@ function checkRecoveryProof(
       ? check
       : { ok: false, error: check.error ?? UNTRUSTED_DEVICE }
   }
-  if (proof?.kind !== 'recoveryKey') {
+  if (proof?.kind !== 'recoveryKey' || !isAuthKey(proof.authKey)) {
     return { ok: false, error: 'Invalid request.' }
   }
   const check = verifySecret(
@@ -472,10 +576,10 @@ function checkRecoveryProof(
 
 /**
  * Recovery step 1: with a verified recovery email ticket, prove possession
- * of the recovery key or a trusted device, and receive the wrapped vault key
- * plus the encrypted items, so the browser can decrypt them and re-encrypt
- * under a new master password. Both are needed: a found recovery kit or a
- * stolen laptop alone isn't enough.
+ * of the recovery key or a trusted device, and receive the wrapped vault
+ * key. Both are needed: a found recovery kit or a stolen laptop alone isn't
+ * enough. A vault made before the random vault key also gets its encrypted
+ * items, so the browser can re-encrypt them under a new vault key.
  */
 export const startRecovery = createServerFn({ method: 'POST' })
   .validator(
@@ -496,25 +600,29 @@ export const startRecovery = createServerFn({ method: 'POST' })
       }
     }
 
-    const items = db
-      .select()
-      .from(vaultItems)
-      .where(eq(vaultItems.userId, user.id))
-      .all()
-      .map(toClientRow)
+    const needsRotation = !user.encryptedVaultKey
+    const items = needsRotation
+      ? db
+          .select()
+          .from(vaultItems)
+          .where(eq(vaultItems.userId, user.id))
+          .all()
+          .map(toClientRow)
+      : []
 
     return {
       success: true as const,
       wrappedKey: check.wrappedKey,
-      kdfIterations: user.kdfIterations,
+      needsRotation,
       items,
     }
   })
 
 /**
- * Recovery step 2: set the new master password, store the re-encrypted
- * items and a fresh recovery kit, sign out every other session, drop other
- * trusted devices (their wrapped keys are stale) and sign in.
+ * Recovery step 2: set the new master password (wrapping the same vault
+ * key) and a fresh recovery kit, sign out every other session, drop other
+ * trusted devices and sign in. A vault made before the random vault key
+ * also sends its items re-encrypted with a new vault key.
  */
 export const completeRecovery = createServerFn({ method: 'POST' })
   .validator(
@@ -522,15 +630,18 @@ export const completeRecovery = createServerFn({ method: 'POST' })
       email: string
       ticket: string
       proof: RecoveryProof
-      newSalt: string
-      newAuthKey: string
-      reEncryptedItems: ReEncryptedItem[]
+      keys: PasswordKeys
       newRecovery: RecoveryInput
+      reEncryptedItems?: ReEncryptedItem[]
       device?: DeviceInput
     }) => data,
   )
   .handler(async ({ data }) => {
     const email = normalizeEmail(data.email)
+    const keys = parsePasswordKeys(data.keys)
+    if (!keys || !isRecoveryInput(data.newRecovery)) {
+      return { success: false as const, error: INVALID_REQUEST }
+    }
     const verification = findTicket(
       email,
       'recovery',
@@ -549,17 +660,25 @@ export const completeRecovery = createServerFn({ method: 'POST' })
       }
     }
 
+    let reEncrypted: ReEncryptedItem[] = []
+    if (!user.encryptedVaultKey || data.reEncryptedItems) {
+      const parsed = parseRotation(user.id, {
+        items: data.reEncryptedItems,
+        recovery: data.newRecovery,
+      })
+      if (!parsed.ok) return { success: false as const, error: parsed.error }
+      reEncrypted = parsed.rotation.items
+    }
+
     db.transaction((tx) => {
       tx.update(users)
         .set({
-          salt: data.newSalt,
-          authHash: bcrypt.hashSync(data.newAuthKey, 10),
+          ...passwordColumns(keys),
           ...recoveryColumns(data.newRecovery),
-          updatedAt: Date.now(),
         })
         .where(eq(users.id, user.id))
         .run()
-      writeReEncryptedItems(tx, user.id, data.reEncryptedItems)
+      writeReEncryptedItems(tx, user.id, reEncrypted)
       // Whoever was signed in with the forgotten password is signed out
       tx.delete(sessions).where(eq(sessions.userId, user.id)).run()
       deleteDevices(tx, user.id, deviceId(data.device))
@@ -579,25 +698,27 @@ export const completeRecovery = createServerFn({ method: 'POST' })
 
 /**
  * No recovery key and no trusted device: after confirming the email, start
- * a new, empty vault under a new master password and recovery kit. Nothing
- * is deleted: the old items are locked away, still encrypted with the old
- * password, and can be restored from Settings with the old password, the
- * old recovery key or a device trusted before the reset.
+ * a new, empty vault with a new vault key, master password and recovery
+ * kit. Nothing is deleted: the old items are locked away, still encrypted
+ * with the old vault key, and can be restored from Settings with the old
+ * password, the old recovery key or a device trusted before the reset.
  */
 export const resetAccount = createServerFn({ method: 'POST' })
   .validator(
     (data: {
       email: string
       ticket: string
-      salt: string
-      authKey: string
-      kdfIterations?: number
+      keys: PasswordKeys
       recovery: RecoveryInput
       device?: DeviceInput
     }) => data,
   )
   .handler(async ({ data }) => {
     const email = normalizeEmail(data.email)
+    const keys = parsePasswordKeys(data.keys)
+    if (!keys || !isRecoveryInput(data.recovery)) {
+      return { success: false as const, error: INVALID_REQUEST }
+    }
     const verification = findTicket(
       email,
       'recovery',
@@ -614,11 +735,8 @@ export const resetAccount = createServerFn({ method: 'POST' })
       tx.delete(sessions).where(eq(sessions.userId, user.id)).run()
       tx.update(users)
         .set({
-          salt: data.salt,
-          authHash: bcrypt.hashSync(data.authKey, 10),
-          kdfIterations: data.kdfIterations || 600000,
+          ...passwordColumns(keys),
           ...recoveryColumns(data.recovery),
-          updatedAt: Date.now(),
         })
         .where(eq(users.id, user.id))
         .run()

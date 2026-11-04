@@ -256,8 +256,9 @@ const SECTIONS: LegalSection[] = [
     title: 'Security',
     content: (
       <p>
-        Your vault is encrypted with AES-256-GCM using a key derived from your
-        master password (PBKDF2, 600,000 rounds) in your browser. Traffic is
+        Your vault is encrypted with AES-256-GCM using a random key that is
+        itself locked with a key derived from your master password (Argon2id)
+        in your browser. Traffic is
         encrypted in transit, sign-in attempts are rate-limited, and the code is
         open source so anyone can check how it works. No system is perfectly
         secure; if you find a vulnerability, please report it to{' '}

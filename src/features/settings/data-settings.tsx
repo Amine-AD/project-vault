@@ -57,7 +57,7 @@ export function DataSettings() {
             AES-256-GCM
           </Badge>
           <Badge variant="outline" pill>
-            PBKDF2 · 600,000 rounds
+            Argon2id · 64 MiB
           </Badge>
           <Badge variant="outline" pill>
             Zero-knowledge

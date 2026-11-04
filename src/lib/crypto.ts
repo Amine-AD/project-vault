@@ -1,4 +1,5 @@
 import * as OTPAuth from 'otpauth'
+import type { KdfParams } from './kdf'
 
 // Convert ArrayBuffer / Uint8Array to Base64
 export function bufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
@@ -38,65 +39,115 @@ export function generateSalt(): string {
 }
 
 /**
- * Derives both:
- * 1. VaultKey: AES-256-GCM CryptoKey (kept strictly in browser memory)
- * 2. AuthKey: SHA-256 hashed token sent to the server for authentication
- * plus the raw vault key bytes, needed only to create a recovery kit.
+ * Runs the account's KDF on the master password and splits the 64-byte
+ * result:
+ * 1. Master key (first 32 bytes): AES-256-GCM key that wraps the vault key.
+ *    It never leaves the browser. In vaults made before the random vault key
+ *    (no encryptedVaultKey on the server), it encrypts the items directly.
+ * 2. Auth key (last 32 bytes, SHA-256 hashed): sent to the server to sign in.
+ *    The server bcrypt-hashes it again; it can't be turned into the master
+ *    key.
  */
-export async function deriveKeys(
+export async function deriveMasterKey(
   masterPassword: string,
   saltBase64: string,
-  iterations = 600000,
-): Promise<{ vaultKey: CryptoKey; authKey: string; rawVaultKey: Uint8Array }> {
-  const encoder = new TextEncoder()
-  const passwordBuffer = encoder.encode(masterPassword)
-  const saltBuffer = base64ToBuffer(saltBase64)
+  kdf: KdfParams,
+): Promise<{
+  masterKey: CryptoKey
+  rawMasterKey: Uint8Array
+  authKey: string
+}> {
+  const derivedBytes = await runKdf(
+    new TextEncoder().encode(masterPassword),
+    base64ToBuffer(saltBase64),
+    kdf,
+  )
+  const masterKeyBytes = derivedBytes.slice(0, 32)
+  const authKeyBytes = derivedBytes.slice(32, 64)
 
-  // Import raw password as key material for PBKDF2
+  const masterKey = await importAesKey(masterKeyBytes)
+  // Hashed so the raw derived bytes never reach the server
+  const authKey = bufferToHex(
+    await window.crypto.subtle.digest('SHA-256', authKeyBytes),
+  )
+
+  // rawMasterKey is only needed for legacy vaults, where it is the vault key
+  return { masterKey, rawMasterKey: masterKeyBytes, authKey }
+}
+
+/** 64 bytes from the master password, using the account's KDF. */
+async function runKdf(
+  password: Uint8Array,
+  salt: Uint8Array,
+  kdf: KdfParams,
+): Promise<Uint8Array> {
+  if (kdf.algorithm === 'argon2id') {
+    // Loaded on demand: the WebAssembly module is only needed to unlock
+    const { argon2id } = await import('hash-wasm')
+    return argon2id({
+      password,
+      salt,
+      iterations: kdf.iterations,
+      memorySize: kdf.memoryKiB,
+      parallelism: kdf.parallelism,
+      hashLength: 64,
+      outputType: 'binary',
+    })
+  }
+
   const baseKey = await window.crypto.subtle.importKey(
     'raw',
-    passwordBuffer,
+    password as BufferSource,
     'PBKDF2',
     false,
     ['deriveBits'],
   )
-
-  // Derive 512 bits (64 bytes)
-  const derivedBits = await window.crypto.subtle.deriveBits(
+  const bits = await window.crypto.subtle.deriveBits(
     {
       name: 'PBKDF2',
-      salt: saltBuffer as any,
-      iterations,
+      salt: salt as BufferSource,
+      iterations: kdf.iterations,
       hash: 'SHA-256',
     },
     baseKey,
     512,
   )
+  return new Uint8Array(bits)
+}
 
-  const derivedBytes = new Uint8Array(derivedBits)
-  // First 256 bits (32 bytes) = Vault Encryption Key
-  const vaultKeyBytes = derivedBytes.slice(0, 32)
-  // Second 256 bits (32 bytes) = Auth Key material
-  const authKeyBytes = derivedBytes.slice(32, 64)
-
-  // Import Vault Key as AES-GCM
-  const vaultKey = await window.crypto.subtle.importKey(
+/** A non-extractable AES-256-GCM key from 32 raw bytes. */
+export function importAesKey(raw: Uint8Array): Promise<CryptoKey> {
+  return window.crypto.subtle.importKey(
     'raw',
-    vaultKeyBytes,
+    raw as BufferSource,
     { name: 'AES-GCM' },
     false,
     ['encrypt', 'decrypt'],
   )
+}
 
-  // Hash authKeyBytes with SHA-256 before sending to server to prevent raw derived key leakage
-  const authHashBuffer = await window.crypto.subtle.digest(
-    'SHA-256',
-    authKeyBytes,
-  )
-  const authKey = bufferToHex(authHashBuffer)
+/**
+ * A new random vault key. It encrypts every item and stays the same when the
+ * master password changes; the password, recovery key and trusted devices
+ * each hold their own wrapped copy of it.
+ */
+export function generateVaultKeyBytes(): Uint8Array {
+  return window.crypto.getRandomValues(new Uint8Array(32))
+}
 
-  // rawVaultKey is only for wrapping into a recovery kit; callers drop it
-  return { vaultKey, authKey, rawVaultKey: vaultKeyBytes }
+/** Encrypts raw vault key bytes with a wrapping key. */
+export function wrapKeyBytes(raw: Uint8Array, wrappingKey: CryptoKey) {
+  return encryptData(bufferToBase64(raw), wrappingKey)
+}
+
+/** Decrypts vault key bytes wrapped by wrapKeyBytes. Throws on a wrong key. */
+export async function unwrapKeyBytes(
+  wrapped: string,
+  wrappingKey: CryptoKey,
+): Promise<Uint8Array> {
+  const raw = base64ToBuffer(await decryptData<string>(wrapped, wrappingKey))
+  if (raw.length !== 32) throw new Error('Invalid vault key.')
+  return raw
 }
 
 export interface EncryptedPayload {
