@@ -1,0 +1,166 @@
+import crypto from 'node:crypto'
+import { createServerFn } from '@tanstack/react-start'
+import { and, desc, eq, inArray } from 'drizzle-orm'
+import { db } from '../db'
+import { lockedVaults, vaultItems } from '../db/schema'
+import { requireSessionUser } from './guards'
+import { NEUTRAL_METADATA, toClientRow } from './item-rows'
+import {
+  checkLockedVaultProof,
+  type LockedVaultProof,
+  lockedVaultDevices,
+  lockedVaultItems,
+} from './recovery-store'
+
+/**
+ * Vaults set aside by a reset without the recovery key. Their items stay
+ * encrypted with the old master password; the browser opens them with the
+ * old password, old recovery key or a device trusted before the reset,
+ * re-encrypts them with the current vault key and sends them back.
+ */
+
+function findLockedVault(userId: string, id: string) {
+  return db
+    .select()
+    .from(lockedVaults)
+    .where(
+      and(
+        eq(lockedVaults.id, String(id ?? '')),
+        eq(lockedVaults.userId, userId),
+      ),
+    )
+    .get()
+}
+
+const NOT_FOUND = 'This locked vault no longer exists.'
+
+/** The signed-in user's locked vaults, newest first. */
+export const listLockedVaults = createServerFn({ method: 'GET' }).handler(
+  async () => {
+    const user = requireSessionUser()
+    return db
+      .select()
+      .from(lockedVaults)
+      .where(eq(lockedVaults.userId, user.id))
+      .orderBy(desc(lockedVaults.lockedAt))
+      .all()
+      .map((vault) => ({
+        id: vault.id,
+        lockedAt: vault.lockedAt,
+        itemCount: vault.itemCount,
+        // Not secret: needed to derive the old key from the old password
+        salt: vault.salt,
+        kdfIterations: vault.kdfIterations,
+        hasRecoveryKey: !!vault.recoveryWrappedKey,
+        deviceIds: lockedVaultDevices(vault).map((d) => d.id),
+      }))
+  },
+)
+
+/**
+ * Checks a proof and returns the locked items (still encrypted) plus the
+ * wrapped old vault key for recovery key and device proofs.
+ */
+export const openLockedVault = createServerFn({ method: 'POST' })
+  .validator((data: { id: string; proof: LockedVaultProof }) => data)
+  .handler(async ({ data }) => {
+    const user = requireSessionUser()
+    const vault = findLockedVault(user.id, data.id)
+    if (!vault) return { success: false as const, error: NOT_FOUND }
+
+    const check = checkLockedVaultProof(vault, data.proof)
+    if (!check.ok) return { success: false as const, error: check.error }
+
+    return {
+      success: true as const,
+      wrappedKey: check.wrappedKey,
+      items: lockedVaultItems(vault).map(toClientRow),
+    }
+  })
+
+/**
+ * Moves the items into the live vault, re-encrypted with the current key,
+ * and deletes the locked copy. Every locked item has to be sent, so nothing
+ * is lost by a partial restore.
+ */
+export const restoreLockedVault = createServerFn({ method: 'POST' })
+  .validator(
+    (data: {
+      id: string
+      proof: LockedVaultProof
+      items: Array<{ id: string; encryptedData: string }>
+    }) => data,
+  )
+  .handler(async ({ data }) => {
+    const user = requireSessionUser()
+    const vault = findLockedVault(user.id, data.id)
+    if (!vault) return { success: false as const, error: NOT_FOUND }
+
+    const check = checkLockedVaultProof(vault, data.proof)
+    if (!check.ok) return { success: false as const, error: check.error }
+
+    const locked = lockedVaultItems(vault)
+    const sent = new Map(
+      (Array.isArray(data.items) ? data.items : []).map((i) => [
+        String(i.id),
+        String(i.encryptedData ?? ''),
+      ]),
+    )
+    if (locked.some((row) => !sent.get(row.id))) {
+      return {
+        success: false as const,
+        error: 'Some items were missing. Nothing was restored; try again.',
+      }
+    }
+
+    // Ids are global; one taken since the reset gets a new id
+    const taken = new Set(
+      locked.length === 0
+        ? []
+        : db
+            .select({ id: vaultItems.id })
+            .from(vaultItems)
+            .where(
+              inArray(
+                vaultItems.id,
+                locked.map((row) => row.id),
+              ),
+            )
+            .all()
+            .map((row) => row.id),
+    )
+
+    db.transaction((tx) => {
+      for (const row of locked) {
+        tx.insert(vaultItems)
+          .values({
+            ...NEUTRAL_METADATA,
+            id: taken.has(row.id) ? crypto.randomUUID() : row.id,
+            userId: user.id,
+            encryptedData: sent.get(row.id) as string,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+          })
+          .run()
+      }
+      tx.delete(lockedVaults).where(eq(lockedVaults.id, vault.id)).run()
+    })
+
+    return { success: true as const, count: locked.length }
+  })
+
+/** Permanently deletes a locked vault the user has given up on. */
+export const deleteLockedVault = createServerFn({ method: 'POST' })
+  .validator((data: { id: string }) => data)
+  .handler(async ({ data }) => {
+    const user = requireSessionUser()
+    db.delete(lockedVaults)
+      .where(
+        and(
+          eq(lockedVaults.id, String(data.id ?? '')),
+          eq(lockedVaults.userId, user.id),
+        ),
+      )
+      .run()
+    return { success: true }
+  })

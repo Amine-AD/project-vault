@@ -17,7 +17,9 @@ import { MasterPasswordInput } from '#/features/auth/components/master-password-
 import { MASTER_PASSWORD_MIN_LENGTH } from '#/features/auth/schemas'
 import { getErrorMessage, getFieldErrorText } from '#/features/auth/utils'
 import { SettingRow, SettingsSection } from './components/setting-row'
+import { LockedVaultsSettings } from './locked-vaults-settings'
 import { RecoveryKitSettings } from './recovery-kit-settings'
+import { TrustedDevicesSettings } from './trusted-devices-settings'
 
 const AUTO_LOCK_OPTIONS = [
   { value: 1, label: '1 minute' },
@@ -62,6 +64,8 @@ export function SecuritySettings() {
 
   return (
     <div className="space-y-8">
+      <LockedVaultsSettings />
+
       <SettingsSection
         title="Protection"
         description="Safeguards for when you step away from your device."
@@ -103,6 +107,8 @@ export function SecuritySettings() {
       </SettingsSection>
 
       <RecoveryKitSettings />
+
+      <TrustedDevicesSettings />
 
       <SettingsSection
         title="Change master password"

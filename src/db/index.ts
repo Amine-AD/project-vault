@@ -44,6 +44,49 @@ sqlite.exec(`
     updated_at INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS email_verifications (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL,
+    verified_at INTEGER,
+    ticket_hash TEXT,
+    consumed_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS trusted_devices (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    auth_hash TEXT NOT NULL,
+    wrapped_key TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS locked_vaults (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    salt TEXT NOT NULL,
+    kdf_iterations INTEGER NOT NULL,
+    auth_hash TEXT NOT NULL,
+    recovery_auth_hash TEXT,
+    recovery_wrapped_key TEXT,
+    devices TEXT NOT NULL DEFAULT '[]',
+    items TEXT NOT NULL DEFAULT '[]',
+    item_count INTEGER NOT NULL,
+    locked_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_trusted_devices_user_id
+    ON trusted_devices(user_id);
+  CREATE INDEX IF NOT EXISTS idx_locked_vaults_user_id
+    ON locked_vaults(user_id);
+  CREATE INDEX IF NOT EXISTS idx_email_verifications_email
+    ON email_verifications(email, purpose);
   CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
   CREATE INDEX IF NOT EXISTS idx_vault_items_user_id ON vault_items(user_id);
 `)

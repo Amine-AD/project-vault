@@ -22,6 +22,12 @@ import {
   unwrapVaultKey,
 } from '../lib/recovery'
 import {
+  forgetThisDevice,
+  getDeviceProof,
+  prepareEnrollment,
+  unwrapWithDevice,
+} from '../lib/trusted-device'
+import {
   changeMasterPassword,
   completeRecovery,
   getCurrentUser,
@@ -30,10 +36,16 @@ import {
   loginUser,
   logoutUser,
   registerUser,
+  resetAccount as resetAccountOnServer,
   setRecoveryKit,
   startRecovery,
 } from '../server/auth'
+import { trustThisDevice as trustThisDeviceOnServer } from '../server/devices'
 import type { ClientVaultRow } from '../server/item-rows'
+import {
+  openLockedVault,
+  restoreLockedVault as restoreLockedVaultOnServer,
+} from '../server/locked-vaults'
 import {
   batchImportVaultItems,
   deleteAllVaultItems,
@@ -77,7 +89,12 @@ interface VaultContextType {
   setClipboardClearSeconds: (seconds: number) => void
   // Auth & Vault Actions
   handleLogin: (email: string, masterPass: string) => Promise<void>
-  handleRegister: (email: string, masterPass: string) => Promise<void>
+  /** `ticket` comes from a verified sign-up email code. */
+  handleRegister: (
+    email: string,
+    ticket: string,
+    masterPass: string,
+  ) => Promise<void>
   handleUnlock: (masterPass: string) => Promise<void>
   lockVault: () => void
   handleLogout: () => Promise<void>
@@ -97,11 +114,57 @@ interface VaultContextType {
   pendingRecoveryKey: string | null
   dismissRecoveryKey: () => void
   createRecoveryKit: (masterPass: string) => Promise<void>
+  /**
+   * Forgotten master password, with the recovery key or this browser as a
+   * trusted device. `ticket` comes from a verified recovery email code.
+   */
   recoverVault: (
     email: string,
-    recoveryKey: string,
+    ticket: string,
+    method: RecoveryMethod,
     newMasterPass: string,
   ) => Promise<void>
+  /**
+   * No recovery key or trusted device: starts a new, empty vault. The old
+   * items are locked away, not deleted. Resolves to how many were locked.
+   */
+  resetVault: (
+    email: string,
+    ticket: string,
+    newMasterPass: string,
+  ) => Promise<number>
+  /** Opens a locked vault and moves its items back. Resolves to the count. */
+  restoreLockedVault: (
+    vault: LockedVaultInfo,
+    method: LockedVaultMethod,
+  ) => Promise<number>
+  /** Trusts this browser for recovery again (after turning it off). */
+  trustThisDevice: (masterPass: string) => Promise<void>
+}
+
+export type RecoveryMethod =
+  | { kind: 'recoveryKey'; recoveryKey: string }
+  | { kind: 'device' }
+
+export type LockedVaultMethod =
+  | { kind: 'password'; password: string }
+  | RecoveryMethod
+
+/** What the browser needs to know about a locked vault to open it. */
+export interface LockedVaultInfo {
+  id: string
+  salt: string
+  kdfIterations: number
+}
+
+const NOT_A_RECOVERY_KEY =
+  'That doesn’t look like a recovery key. It starts with OV- and has 32 letters and numbers after it.'
+
+/** Parses a typed recovery key into its bytes and server auth token. */
+async function readRecoveryKey(input: string) {
+  const keyBytes = parseRecoveryKey(input)
+  if (!keyBytes) throw new Error(NOT_A_RECOVERY_KEY)
+  return { keyBytes, authKey: await recoveryAuthKey(keyBytes) }
 }
 
 const VaultContext = createContext<VaultContextType | null>(null)
@@ -365,19 +428,23 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
 
   // Login & Unlock
   const handleLogin = async (email: string, masterPass: string) => {
+    // Unknown emails get a stand-in salt and fail at loginUser with the same
+    // error as a wrong password, so sign-in can't reveal who has a vault.
     const prelogin = await getPreloginData({ data: { email } })
-    if (!prelogin.exists) {
-      throw new Error('No vault found for this email address.')
-    }
 
-    const { vaultKey: derivedKey, authKey } = await deriveKeys(
-      masterPass,
-      prelogin.salt,
-      prelogin.kdfIterations,
-    )
+    const {
+      vaultKey: derivedKey,
+      authKey,
+      rawVaultKey,
+    } = await deriveKeys(masterPass, prelogin.salt, prelogin.kdfIterations)
+    // Signing in trusts this browser for recovery (unless turned off here)
+    const device = await prepareEnrollment(email, rawVaultKey)
 
-    const result = await loginUser({ data: { email, authKey } })
+    const result = await loginUser({
+      data: { email, authKey, device: device?.enrollment },
+    })
     if (!result.success || !result.user) {
+      if (device?.created) await forgetThisDevice(email)
       throw new Error(result.error || 'Authentication failed.')
     }
 
@@ -388,7 +455,11 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   }
 
   // Register & Unlock
-  const handleRegister = async (email: string, masterPass: string) => {
+  const handleRegister = async (
+    email: string,
+    ticket: string,
+    masterPass: string,
+  ) => {
     const salt = generateSalt()
     const iterations = 600000
     const {
@@ -397,18 +468,22 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       rawVaultKey,
     } = await deriveKeys(masterPass, salt, iterations)
     const kit = await createRecoveryKitMaterial(rawVaultKey)
+    const device = await prepareEnrollment(email, rawVaultKey)
 
     const result = await registerUser({
       data: {
         email,
+        ticket,
         salt,
         authKey,
         kdfIterations: iterations,
         recovery: kit.material,
+        device: device?.enrollment,
       },
     })
 
     if (!result.success || !result.user) {
+      if (device?.created) await forgetThisDevice(email)
       throw new Error(result.error || 'Failed to create account.')
     }
 
@@ -424,15 +499,19 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   const handleUnlock = async (masterPass: string) => {
     if (!user) throw new Error('No user session active')
     const prelogin = await getPreloginData({ data: { email: user.email } })
-    const { vaultKey: derivedKey, authKey } = await deriveKeys(
-      masterPass,
-      prelogin.salt,
-      prelogin.kdfIterations,
-    )
+    const {
+      vaultKey: derivedKey,
+      authKey,
+      rawVaultKey,
+    } = await deriveKeys(masterPass, prelogin.salt, prelogin.kdfIterations)
+    const device = await prepareEnrollment(user.email, rawVaultKey)
 
     // Test key by validating against server
-    const result = await loginUser({ data: { email: user.email, authKey } })
+    const result = await loginUser({
+      data: { email: user.email, authKey, device: device?.enrollment },
+    })
     if (!result.success) {
+      if (device?.created) await forgetThisDevice(user.email)
       throw new Error(result.error || 'Invalid email or master password.')
     }
 
@@ -643,6 +722,9 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       reEncryptedItems.push({ id: item.id, encryptedData })
     }
 
+    // Other trusted devices hold the old key; this one gets the new key
+    const device = await prepareEnrollment(user.email, newRawVaultKey)
+
     // 4. Send to server
     const res = await changeMasterPassword({
       data: {
@@ -651,6 +733,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
         newAuthKey,
         reEncryptedItems,
         newRecovery: kit.material,
+        device: device?.enrollment,
       },
     })
 
@@ -698,27 +781,34 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     setPendingRecoveryKey(kit.recoveryKey)
   }
 
-  // Forgotten master password: unlock with the recovery key, re-encrypt
-  // everything under a new password and issue a fresh recovery key.
+  // Forgotten master password: open the vault with the recovery key or this
+  // browser's device key, re-encrypt everything under a new password and
+  // issue a fresh recovery key (the old one wraps the old vault key).
   const recoverVault = async (
     email: string,
-    recoveryKeyInput: string,
+    ticket: string,
+    method: RecoveryMethod,
     newMasterPass: string,
   ) => {
-    const keyBytes = parseRecoveryKey(recoveryKeyInput)
-    if (!keyBytes) {
-      throw new Error(
-        'That doesn’t look like a recovery key. It starts with OV- and has 32 letters and numbers after it.',
-      )
+    let proof: Parameters<typeof startRecovery>[0]['data']['proof']
+    let unwrap: (wrappedKey: string) => Promise<CryptoKey>
+    if (method.kind === 'device') {
+      const deviceProof = await getDeviceProof(email)
+      if (!deviceProof) {
+        throw new Error('This browser isn’t a trusted device for this vault.')
+      }
+      proof = { kind: 'device', ...deviceProof }
+      unwrap = (wrappedKey) => unwrapWithDevice(email, wrappedKey)
+    } else {
+      const { keyBytes, authKey } = await readRecoveryKey(method.recoveryKey)
+      proof = { kind: 'recoveryKey', authKey }
+      unwrap = (wrappedKey) => unwrapVaultKey(wrappedKey, keyBytes)
     }
-    const proof = await recoveryAuthKey(keyBytes)
 
-    const start = await startRecovery({
-      data: { email, recoveryAuthKey: proof },
-    })
+    const start = await startRecovery({ data: { email, ticket, proof } })
     if (!start.success) throw new Error(start.error)
 
-    const oldKey = await unwrapVaultKey(start.wrappedKey, keyBytes)
+    const oldKey = await unwrap(start.wrappedKey)
     // Strict: skipping an item here would leave it unreadable for good
     const { items: recovered } = await decryptRows(start.items, oldKey, {
       strict: true,
@@ -740,15 +830,18 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       })),
     )
     const kit = await createRecoveryKitMaterial(rawVaultKey)
+    const device = await prepareEnrollment(email, rawVaultKey)
 
     const res = await completeRecovery({
       data: {
         email,
-        recoveryAuthKey: proof,
+        ticket,
+        proof,
         newSalt,
         newAuthKey,
         reEncryptedItems,
         newRecovery: kit.material,
+        device: device?.enrollment,
       },
     })
     if (!res.success) throw new Error(res.error)
@@ -760,6 +853,134 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     setIsUnlocked(true)
     setRecoveryCreatedAt(Date.now())
     setPendingRecoveryKey(kit.recoveryKey)
+  }
+
+  // No recovery key or trusted device: start a new, empty vault. The old
+  // items are locked away on the server, still encrypted with the old
+  // password, and can be restored later from Settings.
+  const resetVault = async (
+    email: string,
+    ticket: string,
+    newMasterPass: string,
+  ) => {
+    const salt = generateSalt()
+    const iterations = 600000
+    const {
+      vaultKey: newVaultKey,
+      authKey,
+      rawVaultKey,
+    } = await deriveKeys(newMasterPass, salt, iterations)
+    const kit = await createRecoveryKitMaterial(rawVaultKey)
+    const device = await prepareEnrollment(email, rawVaultKey)
+
+    const res = await resetAccountOnServer({
+      data: {
+        email,
+        ticket,
+        salt,
+        authKey,
+        kdfIterations: iterations,
+        recovery: kit.material,
+        device: device?.enrollment,
+      },
+    })
+    if (!res.success) throw new Error(res.error)
+
+    setUser(res.user)
+    setVaultKey(newVaultKey)
+    setItems([])
+    setSelectedId(null)
+    setIsUnlocked(true)
+    setRecoveryCreatedAt(Date.now())
+    setPendingRecoveryKey(kit.recoveryKey)
+    return res.lockedItemCount
+  }
+
+  // Open a locked vault with its old password, old recovery key or this
+  // browser (if it was trusted before the reset), then move its items into
+  // the current vault, re-encrypted with the current key.
+  const restoreLockedVault = async (
+    vault: LockedVaultInfo,
+    method: LockedVaultMethod,
+  ) => {
+    if (!user || !vaultKey) throw new Error('Vault must be unlocked')
+
+    let proof: Parameters<typeof openLockedVault>[0]['data']['proof']
+    let oldKey: CryptoKey | null = null
+    let unwrap: ((wrappedKey: string) => Promise<CryptoKey>) | null = null
+    if (method.kind === 'password') {
+      const derived = await deriveKeys(
+        method.password,
+        vault.salt,
+        vault.kdfIterations,
+      )
+      proof = { kind: 'password', authKey: derived.authKey }
+      oldKey = derived.vaultKey
+    } else if (method.kind === 'recoveryKey') {
+      const { keyBytes, authKey } = await readRecoveryKey(method.recoveryKey)
+      proof = { kind: 'recoveryKey', authKey }
+      unwrap = (wrappedKey) => unwrapVaultKey(wrappedKey, keyBytes)
+    } else {
+      const deviceProof = await getDeviceProof(user.email)
+      if (!deviceProof) {
+        throw new Error('This browser wasn’t trusted for this vault.')
+      }
+      proof = { kind: 'device', ...deviceProof }
+      unwrap = (wrappedKey) => unwrapWithDevice(user.email, wrappedKey)
+    }
+
+    const opened = await openLockedVault({ data: { id: vault.id, proof } })
+    if (!opened.success) throw new Error(opened.error)
+    if (!oldKey) {
+      if (!unwrap || !opened.wrappedKey) throw new Error('Invalid response.')
+      oldKey = await unwrap(opened.wrappedKey)
+    }
+
+    const { items: restored } = await decryptRows(opened.items, oldKey, {
+      strict: true,
+    })
+    const reEncrypted = await Promise.all(
+      restored.map(async (item) => ({
+        id: item.id,
+        encryptedData: await encryptData(
+          toEncryptedPayload(item, item.title),
+          vaultKey,
+        ),
+      })),
+    )
+
+    const res = await restoreLockedVaultOnServer({
+      data: { id: vault.id, proof, items: reEncrypted },
+    })
+    if (!res.success) throw new Error(res.error)
+
+    await fetchAndDecryptItems(vaultKey)
+    return res.count
+  }
+
+  // Trust this browser for recovery again, after it was turned off here
+  const trustThisDevice = async (masterPass: string) => {
+    if (!user) throw new Error('Vault must be unlocked')
+    const prelogin = await getPreloginData({ data: { email: user.email } })
+    const { authKey, rawVaultKey } = await deriveKeys(
+      masterPass,
+      prelogin.salt,
+      prelogin.kdfIterations,
+    )
+    const device = await prepareEnrollment(user.email, rawVaultKey, {
+      force: true,
+    })
+    if (!device) {
+      throw new Error('This browser can’t store a device key.')
+    }
+    const res = await trustThisDeviceOnServer({
+      data: { authKey, device: device.enrollment },
+    })
+    if (!res.success) {
+      // Back to how it was: not trusted, and not re-trusted on next unlock
+      await forgetThisDevice(user.email, { optOut: true })
+      throw new Error(res.error || 'Could not trust this device.')
+    }
   }
 
   // Erase all items for current user
@@ -857,6 +1078,9 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
         dismissRecoveryKey: () => setPendingRecoveryKey(null),
         createRecoveryKit,
         recoverVault,
+        resetVault,
+        restoreLockedVault,
+        trustThisDevice,
         handleLogin,
         handleRegister,
         handleUnlock,

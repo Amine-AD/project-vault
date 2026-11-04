@@ -29,7 +29,7 @@ function currentBucket(key: string, now: number): Bucket | undefined {
   return bucket
 }
 
-function clientIp(): string {
+export function clientIp(): string {
   try {
     return getRequestIP({ xForwardedFor: true }) ?? 'unknown'
   } catch {
@@ -82,10 +82,32 @@ export function recordSuccess(account: string) {
   buckets.delete(keysFor(account)[0].key)
 }
 
-// Drop expired buckets now and then so the map can't grow without bound.
+/**
+ * Fixed-window quota for actions that cost something even when they succeed
+ * (like sending an email). Returns false once `key` has used up `max` in the
+ * current window, without counting the refused call.
+ */
+const quotas = new Map<string, Bucket & { windowMs: number }>()
+
+export function takeQuota(key: string, max: number, windowMs: number) {
+  const now = Date.now()
+  const quota = quotas.get(key)
+  if (!quota || now - quota.windowStart >= quota.windowMs) {
+    quotas.set(key, { failures: 1, windowStart: now, windowMs })
+    return true
+  }
+  if (quota.failures >= max) return false
+  quota.failures += 1
+  return true
+}
+
+// Drop expired buckets now and then so the maps can't grow without bound.
 setInterval(() => {
   const now = Date.now()
   for (const [key, bucket] of buckets) {
     if (now - bucket.windowStart >= WINDOW_MS) buckets.delete(key)
+  }
+  for (const [key, quota] of quotas) {
+    if (now - quota.windowStart >= quota.windowMs) quotas.delete(key)
   }
 }, WINDOW_MS).unref?.()
