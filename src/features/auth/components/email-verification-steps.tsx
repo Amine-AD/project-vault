@@ -203,15 +203,26 @@ export function CodeStep({
       <FieldGroup>
         <div className="flex items-start gap-2.5 rounded-lg border bg-muted/48 p-3 text-sm">
           <MailCheckIcon className="mt-0.5 size-4 shrink-0 text-primary-ink" />
-          <p className="min-w-0 text-muted-foreground leading-snug">
-            {purpose === 'signup'
-              ? 'We sent a 6-digit code to '
-              : 'If there’s a vault for this email, we sent a 6-digit code to '}
-            <span className="break-all font-medium text-foreground">
-              {email}
-            </span>
-            . It expires in 10 minutes.
-          </p>
+          {/* Same text whether or not the email has a vault, so this screen
+              can't be used to find out who has an account */}
+          {purpose === 'signup' ? (
+            <p className="min-w-0 text-muted-foreground leading-snug">
+              Check{' '}
+              <span className="break-all font-medium text-foreground">
+                {email}
+              </span>
+              . We sent a 6-digit code, or a sign-in link if you already have a
+              vault. The code expires in 10 minutes.
+            </p>
+          ) : (
+            <p className="min-w-0 text-muted-foreground leading-snug">
+              If there’s a vault for this email, we sent a 6-digit code to{' '}
+              <span className="break-all font-medium text-foreground">
+                {email}
+              </span>
+              . It expires in 10 minutes.
+            </p>
+          )}
         </div>
 
         <FormAlert message={serverError} />
@@ -283,13 +294,6 @@ export function CodeStep({
             {cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend code'}
           </button>
         </div>
-
-        {purpose === 'signup' && (
-          <p className="text-center text-muted-foreground text-xs">
-            Already have a vault with this email? The email will tell you how to
-            sign in.
-          </p>
-        )}
       </FieldGroup>
     </form>
   )

@@ -8,9 +8,17 @@ import {
 import bcrypt from 'bcryptjs'
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db'
-import { sessions, users, vaultItems } from '../db/schema'
+import {
+  emailVerifications,
+  lockedVaults,
+  sessions,
+  trustedDevices,
+  users,
+  vaultItems,
+} from '../db/schema'
 import {
   EmailDeliveryError,
+  sendAccountDeleted,
   sendAccountExists,
   sendRecoveryCode,
   sendSecurityAlert,
@@ -628,4 +636,41 @@ export const resetAccount = createServerFn({ method: 'POST' })
       user: { id: user.id, email: user.email },
       lockedItemCount,
     }
+  })
+
+/**
+ * Permanently deletes the signed-in account and everything tied to it:
+ * items, locked vaults, trusted devices, sessions and pending email codes.
+ * Needs the master password (as its authKey), so an open session alone
+ * isn't enough. Sends a confirmation email and clears the session cookie.
+ */
+export const deleteAccount = createServerFn({ method: 'POST' })
+  .validator((data: { authKey: string }) => data)
+  .handler(async ({ data }) => {
+    const user = requireSessionUser()
+
+    const check = verifySecret(user.email, data.authKey, user.authHash)
+    if (!check.ok) {
+      return {
+        success: false as const,
+        error: check.error ?? 'Master password is incorrect.',
+      }
+    }
+
+    db.transaction((tx) => {
+      // The foreign keys cascade too; deleting explicitly doesn't rely on it
+      tx.delete(vaultItems).where(eq(vaultItems.userId, user.id)).run()
+      tx.delete(lockedVaults).where(eq(lockedVaults.userId, user.id)).run()
+      tx.delete(trustedDevices).where(eq(trustedDevices.userId, user.id)).run()
+      tx.delete(sessions).where(eq(sessions.userId, user.id)).run()
+      tx.delete(emailVerifications)
+        .where(eq(emailVerifications.email, user.email))
+        .run()
+      tx.delete(users).where(eq(users.id, user.id)).run()
+    })
+
+    deleteCookie(SESSION_COOKIE_NAME, { path: '/' })
+    void sendAccountDeleted(user.email)
+
+    return { success: true as const }
   })

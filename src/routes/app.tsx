@@ -5,12 +5,15 @@ import { SidebarInset, SidebarProvider } from '#/components/ui/sidebar'
 import { useVault } from '#/context/VaultContext'
 import { AuthShell } from '#/features/auth/components/auth-shell'
 import { UnlockForm } from '#/features/auth/unlock-form'
+import { SiteError } from '#/features/errors/site-status-page'
 import { RecoveryKitDialog } from '#/features/recovery/recovery-kit-dialog'
 import { AppSidebar } from '#/features/vault/app-sidebar'
 import { PasswordGeneratorDialog } from '#/features/vault/password-generator-dialog'
 
 export const Route = createFileRoute('/app')({
   component: AppLayout,
+  // The shell itself failed, so there's no sidebar to show the app version in
+  errorComponent: SiteError,
 })
 
 function AppLayout() {

@@ -9,8 +9,18 @@ import {
 } from '#/components/ui/data-list'
 import { useVault } from '#/context/VaultContext'
 import { SettingsSection } from './components/setting-row'
+import { DeleteAccountSettings } from './delete-account'
 
 export function AccountSettings() {
+  return (
+    <div className="space-y-8">
+      <AccountDetails />
+      <DeleteAccountSettings />
+    </div>
+  )
+}
+
+function AccountDetails() {
   const { user, lockVault, handleLogout } = useVault()
 
   return (

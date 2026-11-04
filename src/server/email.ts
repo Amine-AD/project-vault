@@ -236,6 +236,25 @@ export async function sendRecoveryCode(to: string, code: string) {
   })
 }
 
+/** Sent after an account is deleted, so a deletion by someone else is noticed. */
+export async function sendAccountDeleted(to: string) {
+  const when = new Date().toUTCString()
+  const detail = `Your ${APP_NAME} account and everything in it were permanently deleted: your items, locked items, trusted devices and recovery kit. This can't be undone.`
+  const warning =
+    "If this wasn't you, someone had your master password. Change the passwords you stored in OneVault and secure your email account."
+  await sendAlert({
+    to,
+    subject: `Your ${APP_NAME} account was deleted`,
+    text: [detail, '', `When: ${when}`, '', warning].join('\n'),
+    html: layout(
+      'Account deleted',
+      p(escapeHtml(detail)) +
+        p(`When: ${escapeHtml(when)}`) +
+        muted(escapeHtml(warning)),
+    ),
+  })
+}
+
 type SecurityEvent = 'changed' | 'recovered' | 'recoveredOnDevice' | 'reset'
 
 const SECURITY_EVENTS: Record<

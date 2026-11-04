@@ -16,6 +16,11 @@ changes, recoveries and resets send an alert. Copy `.env.example` to `.env`
 and set `RESEND_API_KEY`, `EMAIL_FROM` (on a domain verified in Resend) and
 `APP_URL`. Without `RESEND_API_KEY`, emails are printed to the server console.
 
+## Testing
+
+See [docs/TESTING.md](docs/TESTING.md) for a step-by-step checklist that
+covers every feature and recovery scenario.
+
 # Building For Production
 
 To build this application for production:

@@ -32,6 +32,7 @@ import {
 import {
   changeMasterPassword,
   completeRecovery,
+  deleteAccount as deleteAccountOnServer,
   getCurrentUser,
   getPreloginData,
   getRecoveryStatus,
@@ -157,6 +158,16 @@ interface VaultContextType {
   ) => Promise<number>
   /** Trusts this browser for recovery again (after turning it off). */
   trustThisDevice: (masterPass: string) => Promise<void>
+  /**
+   * Permanently deletes the account and everything in it, then signs out.
+   * `beforeSignOut` runs once the server has deleted it but before local
+   * state is cleared, e.g. to navigate away from the app first (otherwise
+   * the app would redirect to sign-in).
+   */
+  deleteAccount: (
+    masterPass: string,
+    beforeSignOut?: () => Promise<void>,
+  ) => Promise<void>
 }
 
 export type RecoveryMethod =
@@ -1057,6 +1068,37 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     clearDeviceOptOut(user.email)
   }
 
+  // Delete the account for good. The master password is checked by the
+  // server; afterwards nothing of the account is left in memory or, for its
+  // device key, in this browser.
+  const deleteAccount = async (
+    masterPass: string,
+    beforeSignOut?: () => Promise<void>,
+  ) => {
+    if (!user) throw new Error('Vault must be unlocked')
+    const email = user.email
+    const prelogin = await getPreloginData({ data: { email } })
+    const { authKey } = await deriveKeys(
+      masterPass,
+      prelogin.salt,
+      prelogin.kdfIterations,
+    )
+
+    const res = await deleteAccountOnServer({ data: { authKey } })
+    if (!res.success) throw new Error(res.error)
+
+    // Pending "undo delete" toasts refer to rows that no longer exist
+    for (const { timer } of pendingDeletes.current.values()) clearTimeout(timer)
+    pendingDeletes.current.clear()
+
+    await forgetThisDevice(email)
+    await beforeSignOut?.()
+    lockVault()
+    setUser(null)
+    setRecoveryCreatedAt(undefined)
+    setPendingRecoveryKey(null)
+  }
+
   // Erase all items for current user
   const eraseAllItems = async () => {
     await deleteAllVaultItems()
@@ -1155,6 +1197,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
         resetVault,
         restoreLockedVault,
         trustThisDevice,
+        deleteAccount,
         handleLogin,
         handleRegister,
         handleUnlock,

@@ -1,19 +1,64 @@
+# Dependencies
 node_modules
-.DS_Store
+
+# Build output and framework caches
 dist
 dist-ssr
-*.local
-.env
+.output
 .nitro
 .tanstack
-.wrangler
-.output
 .vinxi
+.wrangler
+.vercel
+.netlify
+.cache
+*.tsbuildinfo
 __unconfig*
-todos.json
 
+# Secrets: never commit real keys. .env.example is the template to share.
+.env
+.env.*
+!.env.example
+*.local
+
+# Local database: holds every account, session and encrypted vault
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Vault exports and recovery kits, if one is saved inside the project
+onevault-backup-*.json
+onevault-recovery-kit*.txt
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test output
+coverage
+playwright-report
+test-results
+
+# Editors and OS files (shared VS Code settings stay in the repo)
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local notes
+todos.json
 HOW_IT_WAS_BUILT.md
 HOW_TO_USE_AND_TEST.md
 PLAN.md
 PROJECT_OVERVIEW.md
-

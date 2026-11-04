@@ -7,10 +7,11 @@ import { useVault } from '#/context/VaultContext'
 import { MobileMenu } from './mobile-menu'
 
 const NAV = [
-  { href: '#how-it-works', label: 'How it works' },
-  { href: '#features', label: 'Features' },
-  { href: '#self-host', label: 'Self-host' },
-  { href: '#faq', label: 'FAQ' },
+  // Absolute, so they also work from other pages (privacy, terms…)
+  { href: '/#how-it-works', label: 'How it works' },
+  { href: '/#features', label: 'Features' },
+  { href: '/#self-host', label: 'Self-host' },
+  { href: '/#faq', label: 'FAQ' },
 ]
 
 /** Ondeck-sized header CTA: taller, wider and set in 16px. */

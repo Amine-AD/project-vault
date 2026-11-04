@@ -15,6 +15,8 @@ import { Route as authLoginRouteImport } from './routes/(auth)/login'
 import { Route as authRecoverRouteImport } from './routes/(auth)/recover'
 import { Route as authSignUpRouteImport } from './routes/(auth)/sign-up'
 import { Route as websiteIndexRouteImport } from './routes/(website)/index'
+import { Route as websitePrivacyRouteImport } from './routes/(website)/privacy'
+import { Route as websiteTermsRouteImport } from './routes/(website)/terms'
 import { Route as AppIndexRouteImport } from './routes/app/index'
 import { Route as AppAllRouteImport } from './routes/app/all'
 import { Route as AppFavoritesRouteImport } from './routes/app/favorites'
@@ -49,6 +51,16 @@ const authSignUpRoute = authSignUpRouteImport.update({
 const websiteIndexRoute = websiteIndexRouteImport.update({
   id: '/(website)/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const websitePrivacyRoute = websitePrivacyRouteImport.update({
+  id: '/(website)/privacy',
+  path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const websiteTermsRoute = websiteTermsRouteImport.update({
+  id: '/(website)/terms',
+  path: '/terms',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
@@ -87,6 +99,8 @@ export interface FileRoutesByFullPath {
   '/login': typeof authLoginRoute
   '/recover': typeof authRecoverRoute
   '/sign-up': typeof authSignUpRoute
+  '/privacy': typeof websitePrivacyRoute
+  '/terms': typeof websiteTermsRoute
   '/app/all': typeof AppAllRoute
   '/app/favorites': typeof AppFavoritesRoute
   '/app/logins': typeof AppLoginsRoute
@@ -99,6 +113,8 @@ export interface FileRoutesByTo {
   '/login': typeof authLoginRoute
   '/recover': typeof authRecoverRoute
   '/sign-up': typeof authSignUpRoute
+  '/privacy': typeof websitePrivacyRoute
+  '/terms': typeof websiteTermsRoute
   '/app/all': typeof AppAllRoute
   '/app/favorites': typeof AppFavoritesRoute
   '/app/logins': typeof AppLoginsRoute
@@ -114,6 +130,8 @@ export interface FileRoutesById {
   '/(auth)/login': typeof authLoginRoute
   '/(auth)/recover': typeof authRecoverRoute
   '/(auth)/sign-up': typeof authSignUpRoute
+  '/(website)/privacy': typeof websitePrivacyRoute
+  '/(website)/terms': typeof websiteTermsRoute
   '/app/all': typeof AppAllRoute
   '/app/favorites': typeof AppFavoritesRoute
   '/app/logins': typeof AppLoginsRoute
@@ -129,6 +147,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/recover'
     | '/sign-up'
+    | '/privacy'
+    | '/terms'
     | '/app/all'
     | '/app/favorites'
     | '/app/logins'
@@ -141,6 +161,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/recover'
     | '/sign-up'
+    | '/privacy'
+    | '/terms'
     | '/app/all'
     | '/app/favorites'
     | '/app/logins'
@@ -155,6 +177,8 @@ export interface FileRouteTypes {
     | '/(auth)/login'
     | '/(auth)/recover'
     | '/(auth)/sign-up'
+    | '/(website)/privacy'
+    | '/(website)/terms'
     | '/app/all'
     | '/app/favorites'
     | '/app/logins'
@@ -167,6 +191,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   authRouteRoute: typeof authRouteRouteWithChildren
   AppRoute: typeof AppRouteWithChildren
+  websitePrivacyRoute: typeof websitePrivacyRoute
+  websiteTermsRoute: typeof websiteTermsRoute
   websiteIndexRoute: typeof websiteIndexRoute
 }
 
@@ -212,6 +238,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof websiteIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/(website)/privacy': {
+      id: '/(website)/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof websitePrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/(website)/terms': {
+      id: '/(website)/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof websiteTermsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/app/': {
@@ -298,6 +338,8 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   authRouteRoute: authRouteRouteWithChildren,
   AppRoute: AppRouteWithChildren,
+  websitePrivacyRoute: websitePrivacyRoute,
+  websiteTermsRoute: websiteTermsRoute,
   websiteIndexRoute: websiteIndexRoute,
 }
 export const routeTree = rootRouteImport

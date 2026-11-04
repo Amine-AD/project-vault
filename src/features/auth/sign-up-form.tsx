@@ -202,6 +202,28 @@ function PasswordStep({
             </Button>
           )}
         />
+        {/* New tab, so the sign-up in progress isn't lost */}
+        <p className="text-center text-muted-foreground text-xs">
+          By creating a vault, you agree to the{' '}
+          <a
+            className="text-foreground underline underline-offset-2"
+            href="/terms"
+            rel="noopener"
+            target="_blank"
+          >
+            Terms of Service
+          </a>{' '}
+          and{' '}
+          <a
+            className="text-foreground underline underline-offset-2"
+            href="/privacy"
+            rel="noopener"
+            target="_blank"
+          >
+            Privacy Policy
+          </a>
+          .
+        </p>
       </FieldGroup>
     </form>
   )

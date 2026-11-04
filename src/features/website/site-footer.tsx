@@ -7,16 +7,19 @@ import { Sticker } from './components/sticker'
 
 type FooterLink =
   | { label: string; href: string }
-  | { label: string; to: '/login' | '/sign-up' | '/app' }
+  | {
+      label: string
+      to: '/login' | '/sign-up' | '/app' | '/privacy' | '/terms'
+    }
 
 const COLUMNS: { title: string; links: FooterLink[] }[] = [
   {
     title: 'Product',
     links: [
-      { label: 'How it works', href: '#how-it-works' },
-      { label: 'Features', href: '#features' },
-      { label: 'Self-host', href: '#self-host' },
-      { label: 'FAQ', href: '#faq' },
+      { label: 'How it works', href: '/#how-it-works' },
+      { label: 'Features', href: '/#features' },
+      { label: 'Self-host', href: '/#self-host' },
+      { label: 'FAQ', href: '/#faq' },
     ],
   },
   {
@@ -25,6 +28,13 @@ const COLUMNS: { title: string; links: FooterLink[] }[] = [
       { label: 'Sign in', to: '/login' },
       { label: 'Create a vault', to: '/sign-up' },
       { label: 'Open the app', to: '/app' },
+    ],
+  },
+  {
+    title: 'Legal',
+    links: [
+      { label: 'Privacy', to: '/privacy' },
+      { label: 'Terms', to: '/terms' },
     ],
   },
 ]
@@ -71,7 +81,7 @@ export function SiteFooter() {
             </div>
           </div>
 
-          <nav className="flex gap-[72px] pt-2">
+          <nav className="flex flex-wrap gap-x-[72px] gap-y-10 pt-2">
             {COLUMNS.map((col) => (
               <div className="flex flex-col items-start gap-4" key={col.title}>
                 <p className="text-[#a3a09a] text-base leading-6 tracking-[-0.02em]">
