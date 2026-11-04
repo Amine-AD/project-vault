@@ -13,6 +13,7 @@ import { Input } from '#/components/ui/input'
 import { useVault } from '#/context/VaultContext'
 import { FormAlert } from './components/form-alert'
 import { MasterPasswordInput } from './components/master-password-input'
+import { TrustDeviceCheckbox } from './components/trust-device-checkbox'
 import { loginSchema } from './schemas'
 import { getErrorMessage, getFieldErrorText } from './utils'
 
@@ -20,6 +21,7 @@ export function LoginForm() {
   const { handleLogin } = useVault()
   const navigate = useNavigate()
   const [serverError, setServerError] = useState<string | null>(null)
+  const [trustDevice, setTrustDevice] = useState(true)
 
   const form = useForm({
     defaultValues: {
@@ -33,7 +35,7 @@ export function LoginForm() {
     onSubmit: async ({ value }) => {
       setServerError(null)
       try {
-        await handleLogin(value.email.trim(), value.password)
+        await handleLogin(value.email.trim(), value.password, { trustDevice })
         await navigate({ to: '/app' })
       } catch (error) {
         setServerError(getErrorMessage(error, 'Unable to sign in.'))
@@ -106,6 +108,11 @@ export function LoginForm() {
                   </FieldError>
                 </Field>
               )}
+            />
+
+            <TrustDeviceCheckbox
+              checked={trustDevice}
+              onCheckedChange={setTrustDevice}
             />
 
             <form.Subscribe

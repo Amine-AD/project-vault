@@ -22,7 +22,9 @@ import {
   unwrapVaultKey,
 } from '../lib/recovery'
 import {
+  clearDeviceOptOut,
   forgetThisDevice,
+  getDeviceId,
   getDeviceProof,
   prepareEnrollment,
   unwrapWithDevice,
@@ -40,7 +42,10 @@ import {
   setRecoveryKit,
   startRecovery,
 } from '../server/auth'
-import { trustThisDevice as trustThisDeviceOnServer } from '../server/devices'
+import {
+  removeTrustedDevice,
+  trustThisDevice as trustThisDeviceOnServer,
+} from '../server/devices'
 import type { ClientVaultRow } from '../server/item-rows'
 import {
   openLockedVault,
@@ -88,12 +93,22 @@ interface VaultContextType {
   clipboardClearSeconds: number
   setClipboardClearSeconds: (seconds: number) => void
   // Auth & Vault Actions
-  handleLogin: (email: string, masterPass: string) => Promise<void>
+  /**
+   * `trustDevice` (default true) lets this browser recover the vault later;
+   * false also forgets it if it was trusted before. The same option applies
+   * to registering, recovering and resetting.
+   */
+  handleLogin: (
+    email: string,
+    masterPass: string,
+    options?: TrustOptions,
+  ) => Promise<void>
   /** `ticket` comes from a verified sign-up email code. */
   handleRegister: (
     email: string,
     ticket: string,
     masterPass: string,
+    options?: TrustOptions,
   ) => Promise<void>
   handleUnlock: (masterPass: string) => Promise<void>
   lockVault: () => void
@@ -123,6 +138,7 @@ interface VaultContextType {
     ticket: string,
     method: RecoveryMethod,
     newMasterPass: string,
+    options?: TrustOptions,
   ) => Promise<void>
   /**
    * No recovery key or trusted device: starts a new, empty vault. The old
@@ -132,6 +148,7 @@ interface VaultContextType {
     email: string,
     ticket: string,
     newMasterPass: string,
+    options?: TrustOptions,
   ) => Promise<number>
   /** Opens a locked vault and moves its items back. Resolves to the count. */
   restoreLockedVault: (
@@ -155,6 +172,49 @@ export interface LockedVaultInfo {
   id: string
   salt: string
   kdfIterations: number
+}
+
+export interface TrustOptions {
+  /** Trust this browser for recovery. Defaults to true. */
+  trustDevice?: boolean
+}
+
+/**
+ * Device enrollment for an explicit "Trust this device" choice: set up (and
+ * re-enabled if it was turned off) when trusted, none when not.
+ */
+async function chosenEnrollment(
+  email: string,
+  rawVaultKey: Uint8Array,
+  { trustDevice = true }: TrustOptions = {},
+) {
+  return trustDevice
+    ? prepareEnrollment(email, rawVaultKey, { force: true })
+    : null
+}
+
+/**
+ * Once signed in, applies the "Trust this device" choice. Trusted: it keeps
+ * re-trusting itself on unlock. Not trusted: drop this browser's key, stop
+ * it re-trusting itself, and with `removeOnServer` also remove its server
+ * record (for sign-ins that don't already drop other devices).
+ */
+async function applyTrustChoice(
+  email: string,
+  { trustDevice = true }: TrustOptions,
+  { removeOnServer }: { removeOnServer: boolean },
+) {
+  if (trustDevice) {
+    clearDeviceOptOut(email)
+    return
+  }
+  const deviceId = removeOnServer ? await getDeviceId(email) : null
+  await forgetThisDevice(email, { optOut: true })
+  if (deviceId) {
+    await removeTrustedDevice({ data: { id: deviceId } }).catch((err) =>
+      console.error('Failed to remove trusted device', err),
+    )
+  }
 }
 
 const NOT_A_RECOVERY_KEY =
@@ -427,7 +487,11 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   }, [vaultKey, fetchAndDecryptItems])
 
   // Login & Unlock
-  const handleLogin = async (email: string, masterPass: string) => {
+  const handleLogin = async (
+    email: string,
+    masterPass: string,
+    trust: TrustOptions = {},
+  ) => {
     // Unknown emails get a stand-in salt and fail at loginUser with the same
     // error as a wrong password, so sign-in can't reveal who has a vault.
     const prelogin = await getPreloginData({ data: { email } })
@@ -437,8 +501,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       authKey,
       rawVaultKey,
     } = await deriveKeys(masterPass, prelogin.salt, prelogin.kdfIterations)
-    // Signing in trusts this browser for recovery (unless turned off here)
-    const device = await prepareEnrollment(email, rawVaultKey)
+    const device = await chosenEnrollment(email, rawVaultKey, trust)
 
     const result = await loginUser({
       data: { email, authKey, device: device?.enrollment },
@@ -447,6 +510,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       if (device?.created) await forgetThisDevice(email)
       throw new Error(result.error || 'Authentication failed.')
     }
+    await applyTrustChoice(email, trust, { removeOnServer: true })
 
     setUser(result.user)
     setVaultKey(derivedKey)
@@ -459,6 +523,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     email: string,
     ticket: string,
     masterPass: string,
+    trust: TrustOptions = {},
   ) => {
     const salt = generateSalt()
     const iterations = 600000
@@ -468,7 +533,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       rawVaultKey,
     } = await deriveKeys(masterPass, salt, iterations)
     const kit = await createRecoveryKitMaterial(rawVaultKey)
-    const device = await prepareEnrollment(email, rawVaultKey)
+    const device = await chosenEnrollment(email, rawVaultKey, trust)
 
     const result = await registerUser({
       data: {
@@ -486,6 +551,8 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       if (device?.created) await forgetThisDevice(email)
       throw new Error(result.error || 'Failed to create account.')
     }
+    // A brand-new account has no other device records to remove
+    await applyTrustChoice(email, trust, { removeOnServer: false })
 
     setUser(result.user)
     setVaultKey(derivedKey)
@@ -789,6 +856,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     ticket: string,
     method: RecoveryMethod,
     newMasterPass: string,
+    trust: TrustOptions = {},
   ) => {
     let proof: Parameters<typeof startRecovery>[0]['data']['proof']
     let unwrap: (wrappedKey: string) => Promise<CryptoKey>
@@ -830,7 +898,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       })),
     )
     const kit = await createRecoveryKitMaterial(rawVaultKey)
-    const device = await prepareEnrollment(email, rawVaultKey)
+    const device = await chosenEnrollment(email, rawVaultKey, trust)
 
     const res = await completeRecovery({
       data: {
@@ -845,6 +913,8 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       },
     })
     if (!res.success) throw new Error(res.error)
+    // The server already dropped every device not sent along
+    await applyTrustChoice(email, trust, { removeOnServer: false })
 
     setUser(res.user)
     setVaultKey(newVaultKey)
@@ -862,6 +932,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     email: string,
     ticket: string,
     newMasterPass: string,
+    trust: TrustOptions = {},
   ) => {
     const salt = generateSalt()
     const iterations = 600000
@@ -871,7 +942,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       rawVaultKey,
     } = await deriveKeys(newMasterPass, salt, iterations)
     const kit = await createRecoveryKitMaterial(rawVaultKey)
-    const device = await prepareEnrollment(email, rawVaultKey)
+    const device = await chosenEnrollment(email, rawVaultKey, trust)
 
     const res = await resetAccountOnServer({
       data: {
@@ -885,6 +956,8 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       },
     })
     if (!res.success) throw new Error(res.error)
+    // The reset already moved every old device record into the locked vault
+    await applyTrustChoice(email, trust, { removeOnServer: false })
 
     setUser(res.user)
     setVaultKey(newVaultKey)
@@ -981,6 +1054,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       await forgetThisDevice(user.email, { optOut: true })
       throw new Error(res.error || 'Could not trust this device.')
     }
+    clearDeviceOptOut(user.email)
   }
 
   // Erase all items for current user

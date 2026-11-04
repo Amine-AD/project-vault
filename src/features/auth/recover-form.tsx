@@ -22,6 +22,7 @@ import {
 } from './components/email-verification-steps'
 import { FormAlert } from './components/form-alert'
 import { MasterPasswordInput } from './components/master-password-input'
+import { TrustDeviceCheckbox } from './components/trust-device-checkbox'
 import { newVaultPasswordSchema, recoverSchema } from './schemas'
 import { getErrorMessage, getFieldErrorText } from './utils'
 
@@ -299,6 +300,7 @@ function RecoveryKeyStep({
   const { recoverVault } = useVault()
   const navigate = useNavigate()
   const [serverError, setServerError] = useState<string | null>(null)
+  const [trustDevice, setTrustDevice] = useState(true)
 
   const form = useForm({
     defaultValues: { recoveryKey: '', password: '', confirmPassword: '' },
@@ -312,6 +314,7 @@ function RecoveryKeyStep({
           ticket,
           { kind: 'recoveryKey', recoveryKey: value.recoveryKey },
           value.password,
+          { trustDevice },
         )
         await navigate({ to: '/app' })
       } catch (error) {
@@ -358,6 +361,10 @@ function RecoveryKeyStep({
         />
 
         <NewPasswordFields form={form} />
+        <TrustDeviceCheckbox
+          checked={trustDevice}
+          onCheckedChange={setTrustDevice}
+        />
 
         <form.Subscribe
           selector={(state) => state.isSubmitting}
@@ -393,6 +400,7 @@ function ResetStep({
   const { resetVault } = useVault()
   const navigate = useNavigate()
   const [serverError, setServerError] = useState<string | null>(null)
+  const [trustDevice, setTrustDevice] = useState(true)
 
   const form = useForm({
     defaultValues: { password: '', confirmPassword: '' },
@@ -401,7 +409,9 @@ function ResetStep({
     onSubmit: async ({ value }) => {
       setServerError(null)
       try {
-        const locked = await resetVault(email, ticket, value.password)
+        const locked = await resetVault(email, ticket, value.password, {
+          trustDevice,
+        })
         await navigate({ to: '/app' })
         if (locked > 0) {
           toast.info({
@@ -442,6 +452,10 @@ function ResetStep({
 
         <FormAlert message={serverError} />
         <NewPasswordFields form={form} />
+        <TrustDeviceCheckbox
+          checked={trustDevice}
+          onCheckedChange={setTrustDevice}
+        />
 
         <form.Subscribe
           selector={(state) => state.isSubmitting}

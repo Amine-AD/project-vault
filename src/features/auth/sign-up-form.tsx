@@ -17,6 +17,7 @@ import {
 } from './components/email-verification-steps'
 import { FormAlert } from './components/form-alert'
 import { MasterPasswordInput } from './components/master-password-input'
+import { TrustDeviceCheckbox } from './components/trust-device-checkbox'
 import { newMasterPasswordSchema } from './schemas'
 import { getErrorMessage, getFieldErrorText } from './utils'
 
@@ -107,6 +108,7 @@ function PasswordStep({
   const { handleRegister } = useVault()
   const navigate = useNavigate()
   const [serverError, setServerError] = useState<string | null>(null)
+  const [trustDevice, setTrustDevice] = useState(true)
 
   const form = useForm({
     defaultValues: { password: '', confirmPassword: '' },
@@ -115,7 +117,7 @@ function PasswordStep({
     onSubmit: async ({ value }) => {
       setServerError(null)
       try {
-        await handleRegister(email, ticket, value.password)
+        await handleRegister(email, ticket, value.password, { trustDevice })
         await navigate({ to: '/app' })
       } catch (error) {
         setServerError(getErrorMessage(error, 'Failed to create your vault.'))
@@ -185,6 +187,11 @@ function PasswordStep({
               </FieldError>
             </Field>
           )}
+        />
+
+        <TrustDeviceCheckbox
+          checked={trustDevice}
+          onCheckedChange={setTrustDevice}
         />
 
         <form.Subscribe

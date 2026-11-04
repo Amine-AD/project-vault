@@ -174,6 +174,14 @@ function setOptOut(email: string, optedOut: boolean) {
   }
 }
 
+/**
+ * Call once the server has accepted a forced enrollment: the user chose to
+ * trust this browser, so it re-trusts itself on unlock again.
+ */
+export function clearDeviceOptOut(email: string) {
+  setOptOut(email, false)
+}
+
 /** This browser's device id for an account, if it has a device key. */
 export async function getDeviceId(email: string) {
   return (await getRecord(email))?.deviceId ?? null
@@ -181,7 +189,7 @@ export async function getDeviceId(email: string) {
 
 /**
  * Enrollment for this browser, creating its device key if needed. Null when
- * the user opted out, unless `force` (they're turning it back on), or when
+ * the user opted out, unless `force` (they chose to trust it), or when
  * the browser can't store keys. `created` lets a caller undo a key it made
  * for a sign-in that then failed.
  */
@@ -196,7 +204,6 @@ export async function prepareEnrollment(
     let record = await getRecord(email)
     const created = !record
     if (!record) record = await createRecord(email)
-    if (force) setOptOut(email, false)
     return {
       created,
       enrollment: {
